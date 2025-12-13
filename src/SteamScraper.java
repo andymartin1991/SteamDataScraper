@@ -26,21 +26,17 @@ public class SteamScraper {
     private static final String PROGRESS_FILE = "progreso.txt";
     private static final String APP_ID_CACHE_FILE = "lista_appids.txt";
     
-    // Umbral de parada: Si encontramos X juegos seguidos que ya tenemos, paramos.
     private static final int UMBRAL_PARADA_YA_EXISTENTES = 50; 
 
     public static void main(String[] args) {
         System.out.println("🚀 Iniciando escáner MAESTRO de Steam (Modo Inteligente)...");
 
-        // 1. Cargar IDs que ya tenemos para no repetirlos
         Set<Integer> idsYaDescargados = cargarIdsExistentes();
         System.out.println("📚 Conocemos " + idsYaDescargados.size() + " juegos guardados previamente.");
 
         boolean modoPrueba = false;
         int limitePrueba = 300;
         
-        // 2. Gestionar la lista de Apps (Nueva lógica de actualización)
-        // Si no hay progreso pendiente, borramos la caché para forzar la búsqueda de juegos nuevos de hoy
         int ultimoIdProcesado = leerProgreso();
         if (ultimoIdProcesado == 0) {
              File cache = new File(APP_ID_CACHE_FILE);
@@ -59,7 +55,6 @@ public class SteamScraper {
 
         int indiceDeInicio = appIds.size() - 1;
         
-        // 3. Lógica de Reanudación de Crash
         if (ultimoIdProcesado > 0) {
             System.out.println("🔄 Reanudando sesión anterior desde AppID: " + ultimoIdProcesado);
             int puntoDeReanudacion = -1;
@@ -79,31 +74,27 @@ public class SteamScraper {
             System.out.println("✨ Buscando nuevos lanzamientos...");
         }
 
-        // 4. Bucle Principal con Freno de Mano
         int contador = 0;
         int seguidosYaExistentes = 0;
+        boolean seDetuvoPorUmbral = false;
 
         for (int i = indiceDeInicio; i >= 0; i--) {
             int appId = appIds.get(i);
             
-            // VERIFICACIÓN DE EXISTENCIA
             if (idsYaDescargados.contains(appId)) {
                 seguidosYaExistentes++;
-                // Solo imprimimos un punto para no ensuciar la consola, cada 10 saltos
                 if (seguidosYaExistentes % 10 == 0) System.out.print(".");
                 
                 if (seguidosYaExistentes >= UMBRAL_PARADA_YA_EXISTENTES) {
                     System.out.println("\n🛑 ¡ALTO! Se han detectado " + UMBRAL_PARADA_YA_EXISTENTES + " juegos seguidos que ya tienes.");
                     System.out.println("   -> Se asume que la base de datos está actualizada.");
-                    // Borramos el progreso para que la próxima vez busque nuevos desde cero
-                    new File(PROGRESS_FILE).delete(); 
+                    seDetuvoPorUmbral = true; // Marcamos que paramos por esta razón
                     break;
                 }
-                continue; // Saltamos este juego
+                continue;
             }
 
-            // Si llegamos aquí, es un juego nuevo (o uno que falló antes), reseteamos contador de seguidos
-            if (seguidosYaExistentes > 0) System.out.println(); // Salto de línea si veníamos de imprimir puntos
+            if (seguidosYaExistentes > 0) System.out.println();
             seguidosYaExistentes = 0;
 
             try {
@@ -116,24 +107,36 @@ public class SteamScraper {
                     guardarProgreso(appId); 
                     System.out.println(String.format("✅ NUEVO: ID %d | Restantes: %d", appId, i));
                 }
-
                 contador++;
             } catch (Throwable t) {
                 System.err.println("❌ Error en AppID " + appId + ": " + t.toString());
             }
         }
         
+        // --- LÓGICA DE LIMPIEZA FINAL ---
         cerrarArchivoJson();
-        System.out.println("\n🏁 Proceso finalizado.");
+        
+        // Si el bucle terminó (ya sea por completar la lista o por el umbral),
+        // significa que la ejecución fue "exitosa" y no un crash.
+        // Por lo tanto, borramos el archivo de progreso para la próxima vez.
+        File progreso = new File(PROGRESS_FILE);
+        if (progreso.exists()) {
+            progreso.delete();
+            System.out.println("🧹 Limpieza finalizada: Se ha borrado el archivo de progreso.");
+        }
+        
+        if (seDetuvoPorUmbral) {
+             System.out.println("\n🏁 Proceso de actualización finalizado.");
+        } else {
+             System.out.println("\n🏁 Proceso de escaneo completo finalizado.");
+        }
     }
 
-    // --- CARGA DE BASE DE DATOS EXISTENTE ---
     private static Set<Integer> cargarIdsExistentes() {
         Set<Integer> ids = new HashSet<>();
         File f = new File(OUTPUT_FILE);
         if (!f.exists()) return ids;
 
-        // Leemos el archivo JSON línea por línea buscando "id": 12345
         try (BufferedReader br = new BufferedReader(new InputStreamReader(Files.newInputStream(f.toPath()), StandardCharsets.UTF_8))) {
             String line;
             Pattern p = Pattern.compile("\"id\":\\s*(\\d+)");
@@ -149,8 +152,6 @@ public class SteamScraper {
         return ids;
     }
     
-    // --- GESTIÓN DE ARCHIVOS ---
-
     private static void prepararArchivoSalida() {
         File f = new File(OUTPUT_FILE);
         if (!f.exists()) {
@@ -169,7 +170,6 @@ public class SteamScraper {
                         byte b = raf.readByte();
                         if (b == ']') {
                             raf.setLength(pos); 
-                            // System.out.println("ℹ️ Archivo abierto para escritura.");
                             break;
                         } else if (b != '\n' && b != '\r' && b != ' ') {
                             break;
@@ -221,8 +221,6 @@ public class SteamScraper {
             w.write(String.valueOf(appId));
         } catch (IOException e) {}
     }
-
-    // --- EXTRACCIÓN ---
 
     private static String analizarJuego(int appId) {
         String urlString = "https://store.steampowered.com/api/appdetails?appids=" + appId;
