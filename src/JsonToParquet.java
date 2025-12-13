@@ -33,15 +33,8 @@ public class JsonToParquet {
             // 2. Leer el JSON en un DataFrame, Spark infiere el esquema automáticamente
             Dataset<Row> df = spark.read().option("multiline", "true").json(JSON_INPUT_FILE);
 
-            System.out.println("✅ JSON leído correctamente. Esquema inferido por Spark:");
-            df.printSchema();
-
             // 3. Seleccionar todas las columnas EXCEPTO 'supported_languages_raw'
             Dataset<Row> dfFinal = df.drop("supported_languages_raw");
-
-            System.out.println("✨ Mostrando 20 primeros registros (sin truncar):");
-            // 4. Mostrar una vista previa de los datos, como lo pediste
-            dfFinal.show(20, false);
 
             System.out.println("✍️ Escribiendo datos en formato Parquet en la carpeta: " + PARQUET_OUTPUT_DIRECTORY);
 
