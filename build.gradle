@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.steamscraper'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Librería para manejar JSON
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    
+    // Librerías para manejar Parquet y Avro
+    implementation 'org.apache.parquet:parquet-avro:1.13.1'
+    implementation 'org.apache.hadoop:hadoop-common:3.3.4'
+    implementation 'org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4'
+    
+    // Logging necesario para Hadoop/Parquet (para evitar errores de consola)
+    implementation 'org.slf4j:slf4j-simple:2.0.7'
+}
+
+application {
+    mainClass = 'SteamScraper'
+}
+
+// Configuración para permitir caracteres especiales
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
