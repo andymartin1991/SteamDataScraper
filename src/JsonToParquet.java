@@ -17,13 +17,13 @@ import java.util.Map;
 public class JsonToParquet {
 
     private static final String JSON_INPUT_FILE = "juegos_nuevos.json";
-    private static final String PARQUET_OUTPUT_FILE = "juegos.parquet";
+    // Nombre actualizado para el archivo final
+    private static final String PARQUET_OUTPUT_FILE = "SteamGames.parquet";
 
     public static void main(String[] args) {
         System.out.println("🚀 Iniciando conversión de JSON a Parquet...");
 
-        // 1. Definir el Esquema AVRO que Parquet usará para estructurar los datos.
-        // Este esquema asegura que los datos sean consistentes y optimizados.
+        // 1. Definir el Esquema AVRO
         String schemaJson = "{\"namespace\": \"com.steamscraper.avro\", " +
                             "\"type\": \"record\", " +
                             "\"name\": \"Juego\", " +
@@ -41,10 +41,10 @@ public class JsonToParquet {
         Schema schema = new Schema.Parser().parse(schemaJson);
 
         try {
-            // 2. Leer el archivo JSON usando la librería Jackson
+            // 2. Leer el archivo JSON
             File inputFile = new File(JSON_INPUT_FILE);
-            if (!inputFile.exists() || inputFile.length() < 10) { // <10 para descartar JSON vacíos
-                System.err.println("❌ Error: El archivo " + JSON_INPUT_FILE + " no existe o está vacío. Ejecuta SteamScraper primero.");
+            if (!inputFile.exists() || inputFile.length() < 10) { 
+                System.err.println("❌ Error: El archivo " + JSON_INPUT_FILE + " no existe o está vacío.");
                 return;
             }
             
@@ -52,27 +52,25 @@ public class JsonToParquet {
             List<Map<String, Object>> juegos = objectMapper.readValue(inputFile, new TypeReference<List<Map<String, Object>>>() {});
             System.out.println("✅ JSON leído correctamente. Se encontraron " + juegos.size() + " juegos.");
 
-            // 3. Configurar y crear el ParquetWriter
+            // 3. Configurar ParquetWriter
             Path outputPath = new Path(PARQUET_OUTPUT_FILE);
             
-            // Borrar archivo antiguo si existe para evitar errores de Hadoop
             File oldParquet = new File(PARQUET_OUTPUT_FILE);
             if(oldParquet.exists()) {
-                System.out.println("🧹 Borrando archivo Parquet antiguo...");
+                System.out.println("🧹 Borrando archivo Parquet antiguo (" + PARQUET_OUTPUT_FILE + ")...");
                 oldParquet.delete();
             }
 
             ParquetWriter<GenericRecord> writer = AvroParquetWriter.<GenericRecord>builder(outputPath)
                     .withSchema(schema)
                     .withConf(new Configuration())
-                    .withCompressionCodec(CompressionCodecName.GZIP) // Usamos compresión GZIP para que ocupe menos
+                    .withCompressionCodec(CompressionCodecName.GZIP) 
                     .build();
 
-            // 4. Iterar sobre cada juego y escribirlo en el archivo Parquet
-            System.out.println("✍️ Escribiendo datos en formato Parquet... (esto puede tardar si el archivo es grande)");
+            // 4. Escribir datos
+            System.out.println("✍️ Escribiendo datos en " + PARQUET_OUTPUT_FILE + "...");
             for (Map<String, Object> juegoMap : juegos) {
                 GenericRecord record = new GenericData.Record(schema);
-                // Mapeamos cada campo del JSON al esquema del Parquet
                 record.put("id", juegoMap.get("id"));
                 record.put("titulo", juegoMap.get("titulo"));
                 record.put("fecha", juegoMap.get("fecha"));
@@ -86,8 +84,7 @@ public class JsonToParquet {
             }
 
             writer.close();
-            System.out.println("🏁 ¡Éxito! Archivo guardado en: " + PARQUET_OUTPUT_FILE);
-            System.out.println("   -> Este archivo ya está listo para ser subido a GitHub.");
+            System.out.println("🏁 ¡Éxito! Archivo guardado como: " + PARQUET_OUTPUT_FILE);
 
         } catch (IOException e) {
             System.err.println("❌ ERROR FATAL durante la conversión:");
