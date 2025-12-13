@@ -6,6 +6,9 @@ build/
 .gradle/
 local.properties
 
+# Carpeta bin para compatibilidad con Hadoop en Windows
+bin/
+
 # Archivos generados por el sistema operativo
 .DS_Store
 Thumbs.db

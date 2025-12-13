@@ -15,7 +15,6 @@ repositories {
     mavenCentral()
 }
 
-// INSTRUCCIÓN EXPLÍCITA PARA CORREGIR LA RUTA DEL CÓDIGO FUENTE
 sourceSets {
     main {
         java {
@@ -25,20 +24,33 @@ sourceSets {
 }
 
 dependencies {
-    // Librería para manejar JSON
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
     
-    // Librerías para manejar Parquet y Avro
-    implementation 'org.apache.parquet:parquet-avro:1.13.1'
-    implementation 'org.apache.hadoop:hadoop-common:3.3.4'
-    implementation 'org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4'
+    // --- APACHE SPARK ---
+    implementation 'org.apache.spark:spark-core_2.13:3.5.0'
+    implementation 'org.apache.spark:spark-sql_2.13:3.5.0'
+
+    // Se usa la versión de Hadoop con la que Spark 3.5.0 fue construido
+    implementation 'org.apache.hadoop:hadoop-client:3.3.4' 
     
-    // Logging necesario para Hadoop/Parquet (para evitar errores de consola)
-    implementation 'org.slf4j:slf4j-simple:2.0.7'
+    // NOTA: Se elimina slf4j-simple para resolver el conflicto de providers.
+    // Spark ya incluye un backend de logging (log4j).
 }
 
+// Tarea principal por defecto (para SteamScraper)
 application {
     mainClass = 'SteamScraper'
+}
+
+// TAREA ESPECÍFICA (SINTAXIS MODERNA) PARA EJECUTAR JsonToParquet
+tasks.register('runJsonToParquet', JavaExec) {
+    group = "Application"
+    description = "Runs the JsonToParquet class with correct JVM args for Java 17+"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('JsonToParquet')
+    // 1. Permiso para APIs internas de Java 17+
+    // 2. Ruta explícita a las librerías nativas de Hadoop (.dll)
+    jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED', "-Djava.library.path=${project.projectDir}/bin"
 }
 
 tasks.withType(JavaCompile) {
