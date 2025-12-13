@@ -25,6 +25,9 @@ public class JsonToParquet {
                     .config("spark.sql.warehouse.dir", new File("spark-warehouse").getAbsolutePath()) // Evita problemas de permisos en C:\
                     .getOrCreate();
 
+            // Silenciar el logging de Spark para una salida más limpia (MÉTODO OFICIAL)
+            spark.sparkContext().setLogLevel("ERROR");
+
             System.out.println("🚀 Iniciando conversión de JSON a Parquet con Apache Spark...");
 
             // 2. Leer el JSON en un DataFrame, Spark infiere el esquema automáticamente
