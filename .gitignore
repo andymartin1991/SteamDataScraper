@@ -1,0 +1,20 @@
+# Archivos de sistema e IDE (IntelliJ / Android Studio)
+.idea/
+*.iml
+out/
+build/
+.gradle/
+local.properties
+
+# Archivos generados por el sistema operativo
+.DS_Store
+Thumbs.db
+
+# Archivos de datos temporales del Scraper
+# (Es mejor no subirlos para que quien descargue el codigo empiece limpio)
+progreso.txt
+lista_appids.txt
+
+# Nota: Si no quieres subir los resultados JSON porque son muy grandes, 
+# descomenta la siguiente linea:
+# *.json
