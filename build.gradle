@@ -3,11 +3,25 @@ plugins {
     id 'application'
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
 group = 'com.steamscraper'
 version = '1.0-SNAPSHOT'
 
 repositories {
     mavenCentral()
+}
+
+// INSTRUCCIÓN EXPLÍCITA PARA CORREGIR LA RUTA DEL CÓDIGO FUENTE
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src']
+        }
+    }
 }
 
 dependencies {
@@ -27,7 +41,6 @@ application {
     mainClass = 'SteamScraper'
 }
 
-// Configuración para permitir caracteres especiales
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
 }
