@@ -25,7 +25,7 @@ Es el componente encargado de la recolección masiva y el filtrado inicial. Su o
 
 ### 2. `SteamScraper` (Fase de Transformación)
 
-Este componente se encarga de transformar los datos crudos en un formato limpio, estandarizado y listo para ser consumido por otras aplicaciones.
+Este componente se encarga de transformar los datos crudos en un formato limpio, estandarizado y altamente optimizado para su distribución.
 
 *   **Funcionamiento Detallado:**
     1.  **Conexión a la Base de Datos:** Lee todos los registros de la tabla `steam_raw_data` de `steam_raw.sqlite`.
@@ -37,7 +37,7 @@ Este componente se encarga de transformar los datos crudos en un formato limpio,
             *   Convierte la fecha de lanzamiento a formato `YYYY-MM-DD`.
             *   Limpia y formatea la lista de idiomas (separando voces y textos).
             *   Extrae el `metacritic` score y el espacio en disco requerido.
-    3.  **Generación del JSON Final:** Construye un objeto JSON con la estructura final y lo escribe en el fichero `steam_games.json`. El resultado es un único fichero JSON que contiene un array con todos los juegos procesados.
+    3.  **Generación del JSON Comprimido:** Construye un objeto JSON con la estructura final y lo escribe directamente en formato **GZIP** (`steam_games.json.gz`). Esto reduce drásticamente el tamaño del archivo final, facilitando su almacenamiento y transferencia.
 
 ## 🚀 Cómo Ejecutar
 
@@ -52,14 +52,14 @@ Puedes ejecutar cada fase de forma independiente usando las tareas de Gradle:
 2.  Ve a `Tasks` -> `Application`.
 3.  Ejecuta la tarea que necesites:
     *   **`runCollector`**: Para la fase de extracción y carga.
-    *   **`runScraper`**: Para la fase de transformación.
+    *   **`runScraper`**: Para la fase de transformación (Genera el `.gz`).
 
 O desde la terminal:
 ```bash
 # Para recolectar datos de Steam
 ./gradlew runCollector
 
-# Para transformar los datos recolectados a JSON
+# Para transformar los datos y generar el JSON comprimido
 ./gradlew runScraper
 ```
 
@@ -78,6 +78,7 @@ El archivo `steam_raw.sqlite` contiene dos tablas clave:
 ## 🛠️ Tecnologías
 *   **Java 17**: Lenguaje principal.
 *   **SQLite**: Almacenamiento intermedio robusto y portable.
+*   **GZIP**: Compresión de datos de salida.
 *   **Gradle**: Gestión de dependencias y tareas.
 *   **Steam Web API**: Fuente de datos.
 
