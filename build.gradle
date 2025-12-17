@@ -25,31 +25,32 @@ sourceSets {
 
 dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    implementation 'org.xerial:sqlite-jdbc:3.45.1.0' 
     
     // --- APACHE SPARK ---
     implementation 'org.apache.spark:spark-core_2.13:3.5.0'
     implementation 'org.apache.spark:spark-sql_2.13:3.5.0'
-
-    // Se usa la versión de Hadoop con la que Spark 3.5.0 fue construido
     implementation 'org.apache.hadoop:hadoop-client:3.3.4' 
-    
-    // NOTA: Se elimina slf4j-simple para resolver el conflicto de providers.
-    // Spark ya incluye un backend de logging (log4j).
 }
 
-// Tarea principal por defecto (para SteamScraper)
 application {
     mainClass = 'SteamScraper'
 }
 
-// TAREA ESPECÍFICA (SINTAXIS MODERNA) PARA EJECUTAR JsonToParquet
+// --- TAREA PARA EJECUTAR EL COLLECTOR (SQLITE) ---
+tasks.register('runCollector', JavaExec) {
+    group = "Application"
+    description = "Ejecuta el SteamRawCollector con soporte SQLite"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('SteamRawCollector')
+}
+// -------------------------------------------------
+
 tasks.register('runJsonToParquet', JavaExec) {
     group = "Application"
     description = "Runs the JsonToParquet class with correct JVM args for Java 17+"
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('JsonToParquet')
-    // 1. Permiso para APIs internas de Java 17+
-    // 2. Ruta explícita a las librerías nativas de Hadoop (.dll)
     jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED', "-Djava.library.path=${project.projectDir}/bin"
 }
 

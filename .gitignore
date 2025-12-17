@@ -18,6 +18,12 @@ Thumbs.db
 progreso.txt
 lista_appids.txt
 
+# Archivos de base de datos SQLite
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
 # Nota: Si no quieres subir los resultados JSON porque son muy grandes, 
 # descomenta la siguiente linea:
 # *.json

@@ -1,288 +1,260 @@
-import java.io.BufferedReader;
-import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.RandomAccessFile;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 public class SteamScraper {
 
-    private static final String API_KEY = "4BACB9912AA5A10AC6A59248FB48820F";
-    private static final String OUTPUT_FILE = "juegos_nuevos.json";
-    private static final String PROGRESS_FILE = "progreso.txt";
-    private static final String APP_ID_CACHE_FILE = "lista_appids.txt";
-    
-    private static final int UMBRAL_PARADA_YA_EXISTENTES = 50; 
+    private static final String DB_FILE = "steam_raw.sqlite";
+    private static final String OUTPUT_FILE = "steam_games.json";
 
     public static void main(String[] args) {
-        System.out.println("🚀 Iniciando escáner MAESTRO de Steam (Modo Inteligente)...");
+        try {
+            System.out.println("🚀 Iniciando Exportador (SQLite -> JSON Universal)...");
 
-        Set<Integer> idsYaDescargados = cargarIdsExistentes();
-        System.out.println("📚 Conocemos " + idsYaDescargados.size() + " juegos guardados previamente.");
-
-        boolean modoPrueba = false;
-        int limitePrueba = 300;
-        
-        int ultimoIdProcesado = leerProgreso();
-        if (ultimoIdProcesado == 0) {
-             File cache = new File(APP_ID_CACHE_FILE);
-             if (cache.exists()) {
-                 System.out.println("🧹 Limpieza: Borrando caché antigua para buscar lanzamientos recientes...");
-                 cache.delete();
-             }
-        }
-
-        List<Integer> appIds = obtenerListaApps(modoPrueba);
-        if (appIds.isEmpty()) return;
-
-        System.out.println("📦 Catálogo total en Steam: " + appIds.size());
-
-        prepararArchivoSalida();
-
-        int indiceDeInicio = appIds.size() - 1;
-        
-        if (ultimoIdProcesado > 0) {
-            System.out.println("🔄 Reanudando sesión anterior desde AppID: " + ultimoIdProcesado);
-            int puntoDeReanudacion = -1;
-            for(int i = 0; i < appIds.size(); i++){
-                if(appIds.get(i) == ultimoIdProcesado){
-                    puntoDeReanudacion = i;
-                    break;
-                }
-            }
-
-            if (puntoDeReanudacion != -1) {
-                indiceDeInicio = puntoDeReanudacion - 1;
-            } else {
-                System.out.println("   -> ID de reanudación no encontrado. Empezando desde el principio.");
-            }
-        } else {
-            System.out.println("✨ Buscando nuevos lanzamientos...");
-        }
-
-        int contador = 0;
-        int seguidosYaExistentes = 0;
-        boolean seDetuvoPorUmbral = false;
-
-        for (int i = indiceDeInicio; i >= 0; i--) {
-            int appId = appIds.get(i);
-            
-            if (idsYaDescargados.contains(appId)) {
-                seguidosYaExistentes++;
-                if (seguidosYaExistentes % 10 == 0) System.out.print(".");
-                
-                if (seguidosYaExistentes >= UMBRAL_PARADA_YA_EXISTENTES) {
-                    System.out.println("\n🛑 ¡ALTO! Se han detectado " + UMBRAL_PARADA_YA_EXISTENTES + " juegos seguidos que ya tienes.");
-                    System.out.println("   -> Se asume que la base de datos está actualizada.");
-                    seDetuvoPorUmbral = true; // Marcamos que paramos por esta razón
-                    break;
-                }
-                continue;
-            }
-
-            if (seguidosYaExistentes > 0) System.out.println();
-            seguidosYaExistentes = 0;
-
+            // Cargar driver SQLite
             try {
-                if (modoPrueba && contador >= limitePrueba) break;
-
-                String jsonJuego = analizarJuego(appId);
-
-                if (jsonJuego != null) {
-                    guardarJuegoIncremental(jsonJuego);
-                    guardarProgreso(appId); 
-                    System.out.println(String.format("✅ NUEVO: ID %d | Restantes: %d", appId, i));
-                }
-                contador++;
-            } catch (Throwable t) {
-                System.err.println("❌ Error en AppID " + appId + ": " + t.toString());
+                Class.forName("org.sqlite.JDBC");
+            } catch (ClassNotFoundException e) {
+                System.err.println("❌ ERROR: No se encontró el driver JDBC de SQLite.");
+                return;
             }
-        }
-        
-        // --- LÓGICA DE LIMPIEZA FINAL ---
-        cerrarArchivoJson();
-        
-        // Si el bucle terminó (ya sea por completar la lista o por el umbral),
-        // significa que la ejecución fue "exitosa" y no un crash.
-        // Por lo tanto, borramos el archivo de progreso para la próxima vez.
-        File progreso = new File(PROGRESS_FILE);
-        if (progreso.exists()) {
-            progreso.delete();
-            System.out.println("🧹 Limpieza finalizada: Se ha borrado el archivo de progreso.");
-        }
-        
-        if (seDetuvoPorUmbral) {
-             System.out.println("\n🏁 Proceso de actualización finalizado.");
-        } else {
-             System.out.println("\n🏁 Proceso de escaneo completo finalizado.");
-        }
-    }
 
-    private static Set<Integer> cargarIdsExistentes() {
-        Set<Integer> ids = new HashSet<>();
-        File f = new File(OUTPUT_FILE);
-        if (!f.exists()) return ids;
-
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(Files.newInputStream(f.toPath()), StandardCharsets.UTF_8))) {
-            String line;
-            Pattern p = Pattern.compile("\"id\":\\s*(\\d+)");
-            while ((line = br.readLine()) != null) {
-                Matcher m = p.matcher(line);
-                if (m.find()) {
-                    ids.add(Integer.parseInt(m.group(1)));
-                }
-            }
-        } catch (IOException e) {
-            System.out.println("⚠️ No se pudo leer la base de datos existente: " + e.getMessage());
-        }
-        return ids;
-    }
-    
-    private static void prepararArchivoSalida() {
-        File f = new File(OUTPUT_FILE);
-        if (!f.exists()) {
-            try (FileWriter w = new FileWriter(f)) {
+            // Preparar archivo de salida
+            try (FileWriter w = new FileWriter(OUTPUT_FILE)) {
                 w.write("[\n");
-            } catch (IOException e) {
-                System.out.println("❌ Error creando archivo: " + e.getMessage());
-            }
-        } else {
-            try (RandomAccessFile raf = new RandomAccessFile(f, "rw")) {
-                long length = raf.length();
-                if (length > 2) { 
-                    long pos = length - 1;
-                    while (pos > 0) {
-                        raf.seek(pos);
-                        byte b = raf.readByte();
-                        if (b == ']') {
-                            raf.setLength(pos); 
-                            break;
-                        } else if (b != '\n' && b != '\r' && b != ' ') {
-                            break;
+                
+                // Conectar a la DB y leer todo
+                try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
+                     Statement stmt = conn.createStatement()) {
+                    
+                    // Usamos un cursor forward-only para no cargar toda la DB en RAM
+                    stmt.setFetchSize(1000); 
+                    ResultSet rs = stmt.executeQuery("SELECT app_id, json_data FROM steam_raw_data");
+                    
+                    int procesados = 0;
+                    int exportados = 0;
+                    boolean primero = true;
+
+                    while (rs.next()) {
+                        int appId = rs.getInt("app_id");
+                        String jsonCrudo = rs.getString("json_data");
+                        
+                        // Procesar el JSON crudo
+                        String jsonProcesado = procesarJuego(appId, jsonCrudo);
+                        
+                        if (jsonProcesado != null) {
+                            if (!primero) {
+                                w.write(",\n");
+                            }
+                            w.write(jsonProcesado);
+                            primero = false;
+                            exportados++;
                         }
-                        pos--;
+                        
+                        procesados++;
+                        if (procesados % 1000 == 0) {
+                            System.out.println("⚙️ Procesados: " + procesados + " | Exportados: " + exportados);
+                        }
                     }
+                    
+                    System.out.println("\n✅ Exportación finalizada.");
+                    System.out.println("   -> Total leídos: " + procesados);
+                    System.out.println("   -> Total exportados: " + exportados);
                 }
-            } catch (IOException e) {
-                System.out.println("⚠️ Advertencia al preparar archivo: " + e.getMessage());
+                
+                w.write("\n]");
             }
-        }
-    }
-
-    private static void guardarJuegoIncremental(String jsonJuego) {
-        try (FileWriter w = new FileWriter(OUTPUT_FILE, true)) { 
-            File f = new File(OUTPUT_FILE);
-            if (f.length() > 3) { 
-                w.write(",\n");
-            }
-            w.write(jsonJuego);
-        } catch (IOException e) {
-            System.out.println("❌ Error guardando juego: " + e.getMessage());
-        }
-    }
-    
-    private static void cerrarArchivoJson() {
-        try (FileWriter w = new FileWriter(OUTPUT_FILE, true)) {
-            w.write("\n]");
-        } catch (IOException e) {}
-    }
-
-    private static int leerProgreso() {
-        try {
-            File f = new File(PROGRESS_FILE);
-            if (f.exists()) {
-                byte[] bytes = Files.readAllBytes(Paths.get(PROGRESS_FILE));
-                String content = new String(bytes, StandardCharsets.UTF_8).trim();
-                if (content.isEmpty()) return 0;
-                return Integer.parseInt(content);
-            }
+            
         } catch (Exception e) {
-            return 0;
+            e.printStackTrace();
         }
-        return 0;
     }
 
-    private static void guardarProgreso(int appId) {
-        try (FileWriter w = new FileWriter(PROGRESS_FILE)) {
-            w.write(String.valueOf(appId));
-        } catch (IOException e) {}
-    }
+    // --- LÓGICA DE TRANSFORMACIÓN (RAW -> UNIVERSAL) ---
 
-    private static String analizarJuego(int appId) {
-        String urlString = "https://store.steampowered.com/api/appdetails?appids=" + appId;
-
+    private static String procesarJuego(int appId, String json) {
         try {
-            String json = peticionHttp(urlString);
-            if (json == null || !json.contains("\"success\":true")) return null;
+            // Validaciones básicas (aunque el Collector ya filtra, aseguramos integridad)
             if (!json.contains("\"type\":\"game\"")) return null;
+            if (json.contains("\"coming_soon\":true")) return null; // Opcional: Si quieres exportar "Coming Soon", quita esto
+            
+            String fecha = extraerFechaISO(json); 
+            if (fecha == null) return null; 
 
+            // Extracción de datos
+            String titulo = extraerValorJsonManual(json, "name");
+            String slug = generarSlug(titulo);
+            String descCorta = extraerDescripcionCorta(json);
+            String imgPrincipal = extraerValorJsonManual(json, "header_image");
+            String storage = extraerTamano(json);
+            
+            List<String> generos = extraerGeneros(json);
+            List<String> galeria = extraerGaleria(json);
+            
             Map<String, List<String>> idiomas = procesarIdiomas(json);
-            List<String> voces = idiomas.get("voces");
-            List<String> textos = idiomas.get("textos");
+            int metacritic = extraerMetacritic(json);
+            boolean isFree = json.contains("\"is_free\":true");
 
-            String nombre = extraerValorJsonManual(json, "name");
-            String imagen = extraerValorJsonManual(json, "header_image");
-            String fecha = extraerFechaManual(json); 
-            String tamano = extraerTamano(json);
-            String urlTienda = "https://store.steampowered.com/app/" + appId;
-
+            // Construcción del JSON Universal
             StringBuilder sb = new StringBuilder();
             sb.append("  {\n");
-            sb.append("    \"id\": ").append(appId).append(",\n");
-            sb.append("    \"titulo\": \"").append(limpiarTexto(nombre)).append("\",\n");
-            sb.append("    \"fecha\": \"").append(fecha).append("\",\n");
-            sb.append("    \"size\": \"").append(tamano).append("\",\n");
-            sb.append("    \"url_steam\": \"").append(urlTienda).append("\",\n");
-            sb.append("    \"img\": \"").append(imagen).append("\",\n");
-            sb.append("    \"supported_languages_raw\": \"").append(limpiarTexto(extraerValorJsonManual(json, "supported_languages"))).append("\",\n");
+            sb.append("    \"slug\": \"").append(slug).append("\",\n");
+            sb.append("    \"titulo\": \"").append(limpiarTexto(titulo)).append("\",\n");
+            sb.append("    \"descripcion_corta\": \"").append(limpiarTexto(descCorta)).append("\",\n");
+            sb.append("    \"fecha_lanzamiento\": \"").append(fecha).append("\",\n");
+            sb.append("    \"storage\": \"").append(storage).append("\",\n");
             
-            sb.append("    \"idiomas_texto\": ").append(listaAJson(textos)).append(",\n");
-            sb.append("    \"idiomas_voces\": ").append(listaAJson(voces)).append("\n");
+            sb.append("    \"generos\": ").append(listaAJson(generos)).append(",\n");
+            sb.append("    \"img_principal\": \"").append(imgPrincipal).append("\",\n");
+            sb.append("    \"galeria\": ").append(listaAJson(galeria)).append(",\n");
+            
+            sb.append("    \"idiomas\": {\n");
+            sb.append("      \"voces\": ").append(listaAJson(idiomas.get("voces"))).append(",\n");
+            sb.append("      \"textos\": ").append(listaAJson(idiomas.get("textos"))).append("\n");
+            sb.append("    },\n");
+            
+            sb.append("    \"metacritic\": ").append(metacritic).append(",\n");
+            
+            sb.append("    \"tiendas\": [\n");
+            sb.append("      {\n");
+            sb.append("        \"tienda\": \"Steam\",\n");
+            sb.append("        \"id_externo\": \"").append(appId).append("\",\n");
+            sb.append("        \"url\": \"https://store.steampowered.com/app/").append(appId).append("\",\n");
+            sb.append("        \"is_free\": ").append(isFree).append("\n");
+            sb.append("      }\n");
+            sb.append("    ]\n");
             sb.append("  }");
+            
             return sb.toString();
 
         } catch (Exception e) {
-            System.out.println("Error analizando ID " + appId + ": " + e.getMessage());
             return null;
         }
     }
 
-    private static String listaAJson(List<String> lista) {
-        StringBuilder sb = new StringBuilder("[");
-        for (int k = 0; k < lista.size(); k++) {
-            sb.append("\"").append(limpiarTexto(lista.get(k))).append("\"");
-            if (k < lista.size() - 1) sb.append(", ");
+    // --- UTILIDADES (Copiadas del original para mantener la lógica) ---
+
+    private static String generarSlug(String titulo) {
+        if (titulo == null) return "unknown";
+        String normalized = Normalizer.normalize(titulo, Normalizer.Form.NFD);
+        String slug = normalized.replaceAll("[\\p{InCombiningDiacriticalMarks}]", "");
+        slug = slug.toLowerCase();
+        slug = slug.replaceAll("[^a-z0-9\\s-]", ""); 
+        slug = slug.replaceAll("\\s+", "-"); 
+        slug = slug.replaceAll("-+", "-"); 
+        return slug.trim();
+    }
+
+    private static String extraerFechaISO(String json) {
+        String rawDate = extraerValorJsonManual(json, "date");
+        if (rawDate == null || rawDate.contains("TBA") || rawDate.trim().isEmpty()) return null;
+        
+        try {
+            String[] parts = rawDate.replace(",", "").split(" ");
+            if (parts.length < 3) return null; 
+            
+            String mesStr = parts[0].substring(0, 3).toLowerCase();
+            String dia = parts[1];
+            String anio = parts[2];
+            
+            if (dia.length() == 1) dia = "0" + dia;
+            
+            String mes = switch (mesStr) {
+                case "jan" -> "01"; case "feb" -> "02"; case "mar" -> "03";
+                case "apr" -> "04"; case "may" -> "05"; case "jun" -> "06";
+                case "jul" -> "07"; case "aug" -> "08"; case "sep" -> "09";
+                case "oct" -> "10"; case "nov" -> "11"; case "dec" -> "12";
+                default -> "01";
+            };
+            
+            return anio + "-" + mes + "-" + dia;
+        } catch (Exception e) {
+            return null; 
         }
-        sb.append("]");
-        return sb.toString();
+    }
+
+    private static String extraerDescripcionCorta(String json) {
+        String desc = extraerValorJsonManual(json, "short_description");
+        if (desc == null) return "";
+        desc = desc.replace("&quot;", "\"").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
+        if (desc.length() > 300) {
+            return desc.substring(0, 297) + "...";
+        }
+        return desc;
+    }
+
+    private static List<String> extraerGaleria(String json) {
+        List<String> screenshots = new ArrayList<>();
+        int idx = json.indexOf("\"screenshots\"");
+        if (idx == -1) return screenshots;
+        
+        int count = 0;
+        int startSearch = idx;
+        while (count < 3) {
+            int pathFullIdx = json.indexOf("\"path_full\":", startSearch);
+            if (pathFullIdx == -1) break;
+            
+            int startQuote = json.indexOf("\"", pathFullIdx + 12);
+            int endQuote = json.indexOf("\"", startQuote + 1);
+            
+            if (startQuote != -1 && endQuote != -1) {
+                String url = json.substring(startQuote + 1, endQuote);
+                url = url.replace("\\/", "/");
+                screenshots.add(url);
+                startSearch = endQuote;
+                count++;
+            } else {
+                break;
+            }
+        }
+        return screenshots;
+    }
+
+    private static List<String> extraerGeneros(String json) {
+        List<String> generos = new ArrayList<>();
+        int idxGenres = json.indexOf("\"genres\"");
+        if (idxGenres == -1) return generos;
+        
+        int endGenres = json.indexOf("]", idxGenres);
+        if (endGenres == -1) return generos;
+        
+        String genresSection = json.substring(idxGenres, endGenres + 1);
+        Pattern p = Pattern.compile("\"description\":\"([^\"]+)\"");
+        Matcher m = p.matcher(genresSection);
+        while(m.find()) {
+            generos.add(m.group(1));
+        }
+        return generos;
     }
     
-    private static String extraerFechaManual(String json) {
-        String key = "\"date\"";
-        int idx = json.indexOf(key);
-        if (idx == -1) return "TBA";
-        int startQuote = json.indexOf("\"", idx + key.length());
-        while (startQuote != -1 && json.charAt(startQuote-1) != ':' && json.charAt(startQuote-1) != ' ' && json.charAt(startQuote-1) != '\t') {
-             startQuote = json.indexOf("\"", startQuote + 1);
-        }
-        if (startQuote == -1) return "TBA";
-        int endQuote = json.indexOf("\"", startQuote + 1);
-        if (endQuote == -1) return "TBA";
-        return json.substring(startQuote + 1, endQuote);
+    private static int extraerMetacritic(String json) {
+        try {
+            Pattern p = Pattern.compile("\"metacritic\":\\s*\\{\\s*\"score\":\\s*(\\d+)");
+            Matcher m = p.matcher(json);
+            if (m.find()) {
+                return Integer.parseInt(m.group(1));
+            }
+        } catch (Exception e) {}
+        return 0;
+    }
+    
+    private static String extraerTamano(String json) {
+        try {
+            Pattern pSection = Pattern.compile("(Storage|Hard Drive):.*?(\\d+\\.?\\d*)\\s*(GB|MB)");
+            Matcher m = pSection.matcher(json);
+            if (m.find()) return m.group(2) + " " + m.group(3);
+        } catch (Exception e) {}
+        return "N/A";
     }
 
     private static Map<String, List<String>> procesarIdiomas(String json) {
@@ -295,114 +267,25 @@ public class SteamScraper {
         String rawLangs = extraerValorJsonManual(json, "supported_languages");
         if (rawLangs == null || rawLangs.isEmpty()) return result;
 
-        String cleanLangs = rawLangs.replaceAll("<br>.*", "").trim();
+        String cleanLangs = rawLangs.replaceAll("languages with full audio support", "");
+        cleanLangs = cleanLangs.replaceAll("<[^>]*>", ""); 
+        cleanLangs = cleanLangs.replace("with full audio support", "");
+
         String[] langParts = cleanLangs.split(",");
 
         for (String part : langParts) {
             String trimmedPart = part.trim();
             if (trimmedPart.isEmpty()) continue;
-            boolean hasVoice = trimmedPart.contains("<strong>*");
-            String langName = trimmedPart.replaceAll("<[^>]*>", "").replace("*", "").trim();
+            
+            boolean hasVoice = trimmedPart.contains("*");
+            String langName = trimmedPart.replace("*", "").trim();
+            
             if (!langName.isEmpty()) {
                 textos.add(langName);
                 if (hasVoice) voces.add(langName);
             }
         }
         return result;
-    }
-
-    private static String extraerTamano(String json) {
-        try {
-            Pattern pSection = Pattern.compile("Storage:.*?(\\d+\\.?\\d*)\\s*(GB|MB)");
-            Matcher m = pSection.matcher(json);
-            if (m.find()) return m.group(1) + " " + m.group(2);
-        } catch (Exception e) {}
-        return "N/A";
-    }
-
-    private static List<Integer> obtenerListaApps(boolean modoPrueba) {
-        File cacheFile = new File(APP_ID_CACHE_FILE);
-        if (cacheFile.exists()) {
-            System.out.println("✅ Cargando lista de juegos desde caché local...");
-            try {
-                List<String> lines = Files.readAllLines(Paths.get(APP_ID_CACHE_FILE));
-                return lines.stream().map(Integer::parseInt).collect(Collectors.toList());
-            } catch (Exception e) {
-                System.out.println("⚠️ Caché corrupto. Se descargará de nuevo.");
-            }
-        }
-
-        System.out.println("ℹ️ Descargando lista de API Steam...");
-        List<Integer> ids = new ArrayList<>();
-        int lastAppId = 0;
-        
-        while (true) { 
-            try {
-                String url = "https://api.steampowered.com/IStoreService/GetAppList/v1/?key=" + API_KEY +
-                             "&include_games=true&include_dlc=false&max_results=50000&last_appid=" + lastAppId;
-                String json = peticionHttp(url);
-                if (json == null || json.isEmpty()) break;
-                
-                Pattern p = Pattern.compile("\"appid\":(\\d+)");
-                Matcher m = p.matcher(json);
-                int foundInPage = 0;
-                while (m.find()) {
-                    ids.add(Integer.parseInt(m.group(1)));
-                    foundInPage++;
-                }
-                
-                System.out.println("   -> Obtenidos " + foundInPage + " juegos. Total: " + ids.size());
-                
-                if (foundInPage == 0) break;
-                if (modoPrueba) break;
-                
-                lastAppId = ids.get(ids.size() - 1);
-            } catch (Exception e) {
-                break;
-            }
-        }
-        
-        if (!ids.isEmpty()) {
-            try (FileWriter w = new FileWriter(APP_ID_CACHE_FILE)) {
-                for (Integer id : ids) w.write(id + "\n");
-                System.out.println("💾 Lista guardada en caché.");
-            } catch (IOException e) {}
-        }
-        return ids;
-    }
-
-    private static String peticionHttp(String urlString) throws Exception {
-        long backoff = 5000;
-        while (true) {
-            HttpURLConnection conn = null;
-            try {
-                conn = (HttpURLConnection) new URL(urlString).openConnection();
-                conn.setRequestMethod("GET");
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(15000);
-                
-                int code = conn.getResponseCode();
-                if (code == 200) {
-                    try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                        StringBuilder content = new StringBuilder();
-                        String line;
-                        while ((line = in.readLine()) != null) content.append(line);
-                        return content.toString();
-                    }
-                } else if (code == 429 || code >= 500) {
-                    System.out.println("⏳ Esperando " + (backoff/1000) + "s (Error " + code + ")");
-                    Thread.sleep(backoff);
-                    backoff = Math.min(backoff * 2, 60000);
-                } else {
-                    return null;
-                }
-            } catch (Exception e) {
-                System.out.println("⚠️ Error red: " + e.getMessage() + ". Reintentando...");
-                Thread.sleep(5000);
-            } finally {
-                if (conn != null) conn.disconnect();
-            }
-        }
     }
 
     private static String extraerValorJsonManual(String json, String key) {
@@ -445,5 +328,16 @@ public class SteamScraper {
 
     private static String limpiarTexto(String t) {
         return (t == null) ? "" : t.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+    
+    private static String listaAJson(List<String> lista) {
+        if (lista == null) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        for (int k = 0; k < lista.size(); k++) {
+            sb.append("\"").append(limpiarTexto(lista.get(k))).append("\"");
+            if (k < lista.size() - 1) sb.append(", ");
+        }
+        sb.append("]");
+        return sb.toString();
     }
 }
