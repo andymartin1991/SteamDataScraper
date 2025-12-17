@@ -1,5 +1,7 @@
-import java.io.FileWriter;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -11,15 +13,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.GZIPOutputStream;
 
 public class SteamScraper {
 
     private static final String DB_FILE = "steam_raw.sqlite";
-    private static final String OUTPUT_FILE = "steam_games.json";
+    private static final String OUTPUT_FILE = "steam_games.json.gz";
 
     public static void main(String[] args) {
         try {
-            System.out.println("🚀 Iniciando Exportador (SQLite -> JSON Universal)...");
+            System.out.println("🚀 Iniciando Exportador (SQLite -> JSON Universal Comprimido)...");
 
             // Cargar driver SQLite
             try {
@@ -29,8 +32,8 @@ public class SteamScraper {
                 return;
             }
 
-            // Preparar archivo de salida
-            try (FileWriter w = new FileWriter(OUTPUT_FILE)) {
+            // Preparar archivo de salida comprimido
+            try (Writer w = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(OUTPUT_FILE)), "UTF-8")) {
                 w.write("[\n");
                 
                 // Conectar a la DB y leer todo
@@ -70,6 +73,7 @@ public class SteamScraper {
                     System.out.println("\n✅ Exportación finalizada.");
                     System.out.println("   -> Total leídos: " + procesados);
                     System.out.println("   -> Total exportados: " + exportados);
+                    System.out.println("   -> Archivo de salida: " + OUTPUT_FILE);
                 }
                 
                 w.write("\n]");
