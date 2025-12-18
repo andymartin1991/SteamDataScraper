@@ -271,22 +271,39 @@ public class SteamScraper {
         String rawLangs = extraerValorJsonManual(json, "supported_languages");
         if (rawLangs == null || rawLangs.isEmpty()) return result;
 
+        // Frases genéricas a eliminar antes de procesar
         String cleanLangs = rawLangs.replaceAll("languages with full audio support", "");
-        cleanLangs = cleanLangs.replaceAll("<[^>]*>", ""); 
         cleanLangs = cleanLangs.replace("with full audio support", "");
+
+        // --- NORMALIZACIÓN DE SEPARADORES ---
+        // Convertir cualquier variante de salto de línea o <br> en comas para poder hacer split
+        cleanLangs = cleanLangs.replace("\\r", ",");
+        cleanLangs = cleanLangs.replace("\\n", ",");
+        cleanLangs = cleanLangs.replace("\r", ",");
+        cleanLangs = cleanLangs.replace("\n", ",");
+        cleanLangs = cleanLangs.replaceAll("<br\\s*/?>", ",");
 
         String[] langParts = cleanLangs.split(",");
 
         for (String part : langParts) {
-            String trimmedPart = part.trim();
-            if (trimmedPart.isEmpty()) continue;
-            
-            boolean hasVoice = trimmedPart.contains("*");
-            String langName = trimmedPart.replace("*", "").trim();
-            
+            // Determinar si tiene soporte de voz
+            boolean hasVoice = part.contains("*");
+
+            // Limpiar el nombre del idioma de forma secuencial
+            String langName = part
+                    .replace("*", "")              // 1. Quitar el asterisco de voz
+                    .replaceAll("\\[.*?\\]", "")   // 2. Quitar etiquetas BBCode como [b][/b]
+                    .replaceAll("<[^>]*>", "")     // 3. Quitar etiquetas HTML
+                    .trim();                       // 4. Quitar espacios sobrantes
+
             if (!langName.isEmpty()) {
-                textos.add(langName);
-                if (hasVoice) voces.add(langName);
+                // Añadir a las listas correspondientes, evitando duplicados
+                if (!textos.contains(langName)) {
+                    textos.add(langName);
+                }
+                if (hasVoice && !voces.contains(langName)) {
+                    voces.add(langName);
+                }
             }
         }
         return result;
