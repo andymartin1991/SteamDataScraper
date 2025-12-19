@@ -35,20 +35,23 @@ public class SteamRawCollector {
 
             setupDatabase();
 
-            Set<Integer> idsYaProcesados = cargarIdsYaProcesados();
-            System.out.println("📚 Base de datos (Juegos Finalizados + Ignorados): " + idsYaProcesados.size() + " ítems.");
+            // CAMBIO IMPORTANTE: Ahora solo cargamos los juegos VÁLIDOS ya procesados.
+            // Ignoramos la tabla 'steam_ignored_ids' para re-evaluar todo lo que antes descartamos (como los DLCs).
+            Set<Integer> idsYaGuardados = cargarIdsYaGuardados();
+            System.out.println("📚 Base de datos (Juegos/DLCs ya guardados): " + idsYaGuardados.size() + " ítems.");
             
-            System.out.println("☁️ Descargando catálogo fresco de Steam...");
+            System.out.println("☁️ Descargando catálogo fresco de Steam (Juegos + DLCs)...");
             List<Integer> catalogoSteam = obtenerCatalogoSteam();
             System.out.println("📦 Catálogo Steam total: " + catalogoSteam.size() + " ítems.");
 
             List<Integer> pendientes = new ArrayList<>();
             for (Integer id : catalogoSteam) {
-                if (!idsYaProcesados.contains(id)) {
+                // Si no está en la tabla de datos válidos, lo procesamos (sea nuevo o antes ignorado)
+                if (!idsYaGuardados.contains(id)) {
                     pendientes.add(id);
                 }
             }
-            System.out.println("⚡ Pendientes de análisis (Nuevos + Coming Soon): " + pendientes.size() + " ítems.");
+            System.out.println("⚡ Pendientes de análisis (Nuevos + Re-evaluación de Ignorados): " + pendientes.size() + " ítems.");
 
             if (pendientes.isEmpty()) {
                 System.out.println("✅ Todo sincronizado. No hay trabajo pendiente.");
@@ -72,8 +75,11 @@ public class SteamRawCollector {
 
                     if (jsonCrudo != null && !jsonCrudo.isEmpty()) {
                         
-                        if (jsonCrudo.contains("\"type\":\"game\"")) {
+                        // Aceptamos tanto JUEGOS como DLCs
+                        if (jsonCrudo.contains("\"type\":\"game\"") || jsonCrudo.contains("\"type\":\"dlc\"")) {
                             guardarJuego(appId, jsonCrudo);
+                            // Si antes estaba ignorado, ahora lo borramos de la lista negra
+                            borrarDeIgnorados(appId);
                             juegosGuardados++;
                         } else {
                             guardarIgnorado(appId);
@@ -82,7 +88,7 @@ public class SteamRawCollector {
                     }
                     
                     if (procesados % 50 == 0) {
-                        System.out.println(String.format("🚀 Progreso: %d/%d | Juegos: %d | Descartados: %d | ID: %d", 
+                        System.out.println(String.format("🚀 Progreso: %d/%d | Guardados: %d | Descartados: %d | ID: %d", 
                             procesados, pendientes.size(), juegosGuardados, basuraDescartada, appId));
                     }
                     
@@ -94,7 +100,7 @@ public class SteamRawCollector {
             }
             
             System.out.println("\n🏁 Sincronización finalizada.");
-            System.out.println("   -> Juegos Procesados/Actualizados: " + juegosGuardados);
+            System.out.println("   -> Juegos/DLCs Procesados: " + juegosGuardados);
             System.out.println("   -> Basura Descartada: " + basuraDescartada);
             
         } catch (Exception e) {
@@ -108,9 +114,8 @@ public class SteamRawCollector {
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
              Statement stmt = conn.createStatement()) {
             
-            // Configuración para mejorar concurrencia y evitar bloqueos
-            stmt.execute("PRAGMA journal_mode=WAL;"); // Write-Ahead Logging
-            stmt.execute("PRAGMA busy_timeout=5000;"); // Esperar hasta 5s si está ocupada
+            stmt.execute("PRAGMA journal_mode=WAL;"); 
+            stmt.execute("PRAGMA busy_timeout=5000;"); 
             
             stmt.execute("CREATE TABLE IF NOT EXISTS steam_raw_data (" +
                          "app_id INTEGER PRIMARY KEY, " +
@@ -126,17 +131,13 @@ public class SteamRawCollector {
         }
     }
 
-    private static Set<Integer> cargarIdsYaProcesados() {
+    private static Set<Integer> cargarIdsYaGuardados() {
         Set<Integer> ids = new HashSet<>();
         
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
              Statement stmt = conn.createStatement()) {
              
-            ResultSet rsIgnored = stmt.executeQuery("SELECT app_id FROM steam_ignored_ids");
-            while (rsIgnored.next()) {
-                ids.add(rsIgnored.getInt("app_id"));
-            }
-            
+            // SOLO cargamos los que ya son válidos. Ignoramos la tabla de descartes.
             ResultSet rsGames = stmt.executeQuery("SELECT app_id, json_data FROM steam_raw_data");
             while (rsGames.next()) {
                 String json = rsGames.getString("json_data");
@@ -160,7 +161,7 @@ public class SteamRawCollector {
                 pstmt.setInt(1, appId);
                 pstmt.setString(2, json);
                 pstmt.executeUpdate();
-                return; // Éxito
+                return; 
             } catch (Exception e) {
                 if (e.getMessage().contains("locked")) {
                     intentos++;
@@ -194,6 +195,18 @@ public class SteamRawCollector {
             }
         }
     }
+
+    // Nuevo método para limpiar la tabla de ignorados si rescatamos un DLC
+    private static void borrarDeIgnorados(int appId) {
+        String sql = "DELETE FROM steam_ignored_ids WHERE app_id = ?";
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, appId);
+            pstmt.executeUpdate();
+        } catch (Exception e) {
+            // No es crítico si falla
+        }
+    }
     
     // --- LÓGICA DE DESCARGA ---
 
@@ -209,7 +222,7 @@ public class SteamRawCollector {
         while (true) { 
             try {
                 String url = "https://api.steampowered.com/IStoreService/GetAppList/v1/?key=" + API_KEY +
-                             "&include_games=true&include_dlc=false&max_results=50000&last_appid=" + lastAppId;
+                             "&include_games=true&include_dlc=true&max_results=50000&last_appid=" + lastAppId;
                 String json = peticionHttp(url);
                 if (json == null || json.isEmpty()) break;
                 

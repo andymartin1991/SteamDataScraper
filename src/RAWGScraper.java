@@ -249,14 +249,21 @@ public class RAWGScraper {
     }
 
     private static String construirTiendasJson(String jsonBasic, String jsonStores, String gameTitle, Set<String> plataformasSet, boolean isFree) {
-        // Estrategia:
-        // 1. Si jsonStores (de /games/{id}/stores) existe y tiene contenido, usarlo como fuente prioritaria.
-        //    Este JSON contiene las URLs directas.
-        // 2. Si no, usar el jsonBasic (de la lista) que no tiene URLs directas y generarlas.
+        // Estrategia MEJORADA:
+        // 1. Comprobamos si jsonStores es válido Y tiene contenido real.
+        //    Si es "[]" o "{"results":[]}", lo consideramos inválido.
         
+        boolean storesValido = false;
         if (jsonStores != null && !jsonStores.isEmpty() && !jsonStores.equals("[]")) {
+            if (!jsonStores.contains("\"results\":[]")) {
+                storesValido = true;
+            }
+        }
+
+        if (storesValido) {
             return construirTiendasDesdeJsonStores(jsonStores, isFree);
         } else {
+            // Fallback: Si no hay stores oficiales, generamos enlaces de búsqueda
             return construirTiendasDesdeJsonBasic(jsonBasic, gameTitle, plataformasSet, isFree);
         }
     }
