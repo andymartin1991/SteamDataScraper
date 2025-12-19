@@ -1,5 +1,4 @@
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.sql.Connection;
@@ -22,9 +21,8 @@ public class SteamScraper {
 
     public static void main(String[] args) {
         try {
-            System.out.println("🚀 Iniciando Exportador (SQLite -> JSON Universal Comprimido)...");
+            System.out.println("🚀 Iniciando Exportador Steam (SQLite -> JSON Universal)...");
 
-            // Cargar driver SQLite
             try {
                 Class.forName("org.sqlite.JDBC");
             } catch (ClassNotFoundException e) {
@@ -32,15 +30,12 @@ public class SteamScraper {
                 return;
             }
 
-            // Preparar archivo de salida comprimido
             try (Writer w = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(OUTPUT_FILE)), "UTF-8")) {
                 w.write("[\n");
                 
-                // Conectar a la DB y leer todo
                 try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
                      Statement stmt = conn.createStatement()) {
                     
-                    // Usamos un cursor forward-only para no cargar toda la DB en RAM
                     stmt.setFetchSize(1000); 
                     ResultSet rs = stmt.executeQuery("SELECT app_id, json_data FROM steam_raw_data");
                     
@@ -52,7 +47,6 @@ public class SteamScraper {
                         int appId = rs.getInt("app_id");
                         String jsonCrudo = rs.getString("json_data");
                         
-                        // Procesar el JSON crudo
                         String jsonProcesado = procesarJuego(appId, jsonCrudo);
                         
                         if (jsonProcesado != null) {
@@ -84,18 +78,14 @@ public class SteamScraper {
         }
     }
 
-    // --- LÓGICA DE TRANSFORMACIÓN (RAW -> UNIVERSAL) ---
-
     private static String procesarJuego(int appId, String json) {
         try {
-            // Validaciones básicas (aunque el Collector ya filtra, aseguramos integridad)
             if (!json.contains("\"type\":\"game\"")) return null;
-            if (json.contains("\"coming_soon\":true")) return null; // Opcional: Si quieres exportar "Coming Soon", quita esto
+            if (json.contains("\"coming_soon\":true")) return null; 
             
             String fecha = extraerFechaISO(json); 
             if (fecha == null) return null; 
 
-            // Extracción de datos
             String titulo = extraerValorJsonManual(json, "name");
             String slug = generarSlug(titulo);
             String descCorta = extraerDescripcionCorta(json);
@@ -109,7 +99,6 @@ public class SteamScraper {
             int metacritic = extraerMetacritic(json);
             boolean isFree = json.contains("\"is_free\":true");
 
-            // Construcción del JSON Universal
             StringBuilder sb = new StringBuilder();
             sb.append("  {\n");
             sb.append("    \"slug\": \"").append(slug).append("\",\n");
@@ -119,6 +108,7 @@ public class SteamScraper {
             sb.append("    \"storage\": \"").append(storage).append("\",\n");
             
             sb.append("    \"generos\": ").append(listaAJson(generos)).append(",\n");
+            sb.append("    \"plataformas\": [\"PC\"],\n"); 
             sb.append("    \"img_principal\": \"").append(imgPrincipal).append("\",\n");
             sb.append("    \"galeria\": ").append(listaAJson(galeria)).append(",\n");
             
@@ -132,6 +122,7 @@ public class SteamScraper {
             sb.append("    \"tiendas\": [\n");
             sb.append("      {\n");
             sb.append("        \"tienda\": \"Steam\",\n");
+            // ELIMINADO: "plataforma": "PC"
             sb.append("        \"id_externo\": \"").append(appId).append("\",\n");
             sb.append("        \"url\": \"https://store.steampowered.com/app/").append(appId).append("\",\n");
             sb.append("        \"is_free\": ").append(isFree).append("\n");
@@ -146,7 +137,7 @@ public class SteamScraper {
         }
     }
 
-    // --- UTILIDADES (Copiadas del original para mantener la lógica) ---
+    // --- UTILIDADES ---
 
     private static String generarSlug(String titulo) {
         if (titulo == null) return "unknown";
@@ -271,12 +262,9 @@ public class SteamScraper {
         String rawLangs = extraerValorJsonManual(json, "supported_languages");
         if (rawLangs == null || rawLangs.isEmpty()) return result;
 
-        // Frases genéricas a eliminar antes de procesar
         String cleanLangs = rawLangs.replaceAll("languages with full audio support", "");
         cleanLangs = cleanLangs.replace("with full audio support", "");
 
-        // --- NORMALIZACIÓN DE SEPARADORES ---
-        // Convertir cualquier variante de salto de línea o <br> en comas para poder hacer split
         cleanLangs = cleanLangs.replace("\\r", ",");
         cleanLangs = cleanLangs.replace("\\n", ",");
         cleanLangs = cleanLangs.replace("\r", ",");
@@ -286,18 +274,15 @@ public class SteamScraper {
         String[] langParts = cleanLangs.split(",");
 
         for (String part : langParts) {
-            // Determinar si tiene soporte de voz
             boolean hasVoice = part.contains("*");
 
-            // Limpiar el nombre del idioma de forma secuencial
             String langName = part
-                    .replace("*", "")              // 1. Quitar el asterisco de voz
-                    .replaceAll("\\[.*?\\]", "")   // 2. Quitar etiquetas BBCode como [b][/b]
-                    .replaceAll("<[^>]*>", "")     // 3. Quitar etiquetas HTML
-                    .trim();                       // 4. Quitar espacios sobrantes
+                    .replace("*", "")              
+                    .replaceAll("\\[.*?\\]", "")   
+                    .replaceAll("<[^>]*>", "")     
+                    .trim();                       
 
             if (!langName.isEmpty()) {
-                // Añadir a las listas correspondientes, evitando duplicados
                 if (!textos.contains(langName)) {
                     textos.add(langName);
                 }

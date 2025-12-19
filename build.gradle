@@ -44,6 +44,34 @@ tasks.register('runCollector', JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('SteamRawCollector')
 }
+
+tasks.register('runIgdbCollector', JavaExec) {
+    group = "Application"
+    description = "Ejecuta el IGDBRawCollector con soporte SQLite"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('IGDBRawCollector')
+}
+
+tasks.register('runRawgCollector', JavaExec) {
+    group = "Application"
+    description = "Ejecuta el RAWGRawCollector con soporte SQLite"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('RAWGRawCollector')
+}
+
+tasks.register('runRawgDetailCollector', JavaExec) {
+    group = "Application"
+    description = "Descarga los detalles (descripción, etc) de los juegos de RAWG"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('RAWGDetailCollector')
+}
+
+tasks.register('runRawgScraper', JavaExec) {
+    group = "Application"
+    description = "Ejecuta el RAWGScraper para procesar el JSON"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('RAWGScraper')
+}
 // -------------------------------------------------
 
 tasks.register('runJsonToParquet', JavaExec) {
