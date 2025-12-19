@@ -34,8 +34,8 @@ public class RAWGScraper {
                     
                     stmt.setFetchSize(1000); 
                     
-                    // JOIN para obtener datos básicos y detalles si existen
-                    String sql = "SELECT r.json_data as json_basic, d.json_full as json_detail " +
+                    // JOIN para obtener datos básicos, detalles y stores
+                    String sql = "SELECT r.json_data as json_basic, d.json_full as json_detail, d.json_stores " +
                                  "FROM rawg_raw_data r " +
                                  "LEFT JOIN rawg_details_data d ON r.game_id = d.game_id";
                                  
@@ -48,8 +48,9 @@ public class RAWGScraper {
                     while (rs.next()) {
                         String jsonBasic = rs.getString("json_basic");
                         String jsonDetail = rs.getString("json_detail"); // Puede ser null
+                        String jsonStores = rs.getString("json_stores"); // Puede ser null
                         
-                        String jsonProcesado = procesarJuego(jsonBasic, jsonDetail);
+                        String jsonProcesado = procesarJuego(jsonBasic, jsonDetail, jsonStores);
                         
                         if (jsonProcesado != null) {
                             if (!primero) {
@@ -80,7 +81,7 @@ public class RAWGScraper {
         }
     }
 
-    private static String procesarJuego(String jsonBasic, String jsonDetail) {
+    private static String procesarJuego(String jsonBasic, String jsonDetail, String jsonStores) {
         try {
             if (jsonBasic.contains("\"tba\":true")) return null;
             
@@ -99,19 +100,16 @@ public class RAWGScraper {
             boolean isFree = detectarSiEsGratis(generos, tags);
 
             Set<String> plataformasSet = new HashSet<>(extraerPlataformas(jsonBasic));
-            String tiendasJson = construirTiendasJson(jsonBasic, titulo, plataformasSet, isFree);
+            String tiendasJson = construirTiendasJson(jsonBasic, jsonStores, titulo, plataformasSet, isFree);
 
             List<String> plataformasFinales = new ArrayList<>(plataformasSet);
 
             // --- DATOS DEL DETALLE (Si existe) ---
             String descripcion = "";
-            // Idiomas en RAWG no vienen estructurados, a veces están en tags o no están.
-            // Dejaremos idiomas vacíos por ahora salvo que encontremos un patrón claro en el detalle.
-            
             if (jsonDetail != null && !jsonDetail.isEmpty()) {
-                descripcion = extraerValorJsonManual(jsonDetail, "description_raw"); // RAWG da description_raw limpia
+                descripcion = extraerValorJsonManual(jsonDetail, "description_raw");
                 if (descripcion == null) {
-                    descripcion = extraerValorJsonManual(jsonDetail, "description"); // Fallback a HTML
+                    descripcion = extraerValorJsonManual(jsonDetail, "description");
                 }
             }
 
@@ -144,7 +142,6 @@ public class RAWGScraper {
         }
     }
     
-    // --- LÓGICA FREE TO PLAY ---
     private static boolean detectarSiEsGratis(List<String> generos, List<String> tags) {
         for (String g : generos) {
             if (g.equalsIgnoreCase("Free to Play")) return true;
@@ -154,8 +151,6 @@ public class RAWGScraper {
         }
         return false;
     }
-
-    // --- UTILIDADES DE EXTRACCIÓN ---
 
     private static int extraerMetacritic(String json) {
         String meta = extraerValorJsonManual(json, "metacritic");
@@ -239,42 +234,65 @@ public class RAWGScraper {
         return galeria;
     }
 
-    private static String construirTiendasJson(String json, String gameTitle, Set<String> plataformasSet, boolean isFree) {
-        StringBuilder sb = new StringBuilder("[\n");
+    private static String construirTiendasJson(String jsonBasic, String jsonStores, String gameTitle, Set<String> plataformasSet, boolean isFree) {
+        // Estrategia:
+        // 1. Si jsonStores (de /games/{id}/stores) existe y tiene contenido, usarlo como fuente prioritaria.
+        //    Este JSON contiene las URLs directas.
+        // 2. Si no, usar el jsonBasic (de la lista) que no tiene URLs directas y generarlas.
         
+        if (jsonStores != null && !jsonStores.isEmpty() && !jsonStores.equals("[]")) {
+            return construirTiendasDesdeJsonStores(jsonStores, isFree);
+        } else {
+            return construirTiendasDesdeJsonBasic(jsonBasic, gameTitle, plataformasSet, isFree);
+        }
+    }
+
+    private static String construirTiendasDesdeJsonStores(String jsonStores, boolean isFree) {
+        StringBuilder sb = new StringBuilder("[\n");
+        // El JSON de /stores es un array de objetos. Ej: [{"id":1,"game_id":1,"store_id":1,"url":"http..."}, ...]
+        Pattern p = Pattern.compile("\\{\"id\":(\\d+),.*?\"store_id\":(\\d+),\"url\":\"([^\"]+)\"\\}");
+        Matcher m = p.matcher(jsonStores);
+        
+        boolean primero = true;
+        while (m.find()) {
+            if (!primero) {
+                sb.append(",\n");
+            }
+            String storeId = m.group(2);
+            String url = m.group(3);
+            String storeName = getStoreNameFromUrl(url); // Helper para obtener un nombre legible
+
+            sb.append("      {\n");
+            sb.append("        \"tienda\": \"").append(limpiarTexto(storeName)).append("\",\n");
+            sb.append("        \"id_externo\": \"").append(storeId).append("\",\n");
+            sb.append("        \"url\": \"").append(url).append("\",\n"); 
+            sb.append("        \"is_free\": ").append(isFree).append("\n"); 
+            sb.append("      }");
+            primero = false;
+        }
+        sb.append("\n    ]");
+        return sb.toString();
+    }
+
+    private static String construirTiendasDesdeJsonBasic(String json, String gameTitle, Set<String> plataformasSet, boolean isFree) {
+        StringBuilder sb = new StringBuilder("[\n");
         String searchKey = "\"stores\":[";
         int startIdx = json.indexOf(searchKey);
         
         if (startIdx != -1) {
-            int balance = 0;
-            int endIdx = -1;
-            for(int i = startIdx + searchKey.length() - 1; i < json.length(); i++) {
-                char c = json.charAt(i);
-                if(c == '[') balance++;
-                if(c == ']') {
-                    balance--;
-                    if(balance == 0) {
-                        endIdx = i;
-                        break;
-                    }
-                }
-            }
-
+            int endIdx = json.indexOf("]", startIdx);
             if (endIdx != -1) {
                 String arrayContent = json.substring(startIdx + searchKey.length(), endIdx);
-                
                 Pattern p = Pattern.compile("\"store\":\\{\"id\":(\\d+),\"name\":\"([^\"]+)\",\"slug\":\"([^\"]+)\"");
                 Matcher m = p.matcher(arrayContent);
                 
                 boolean primero = true;
                 while (m.find()) {
-                    if (!primero) {
-                        sb.append(",\n");
-                    }
+                    if (!primero) sb.append(",\n");
+                    
                     String storeId = m.group(1);
                     String storeName = m.group(2);
                     String storeSlug = m.group(3);
-                    
                     String url = generarUrlBusqueda(storeSlug, gameTitle);
                     
                     if (storeSlug.equals("steam") || storeSlug.equals("epic-games") || storeSlug.equals("gog") || storeSlug.equals("itch")) {
@@ -291,7 +309,6 @@ public class RAWGScraper {
                 }
             }
         }
-
         sb.append("\n    ]");
         return sb.toString();
     }
@@ -300,29 +317,32 @@ public class RAWGScraper {
         if (gameTitle == null) return "";
         try {
             String query = URLEncoder.encode(gameTitle, StandardCharsets.UTF_8.toString());
-            
             switch (storeSlug.toLowerCase()) {
-                case "playstation-store":
-                    return "https://store.playstation.com/search/" + query;
-                case "xbox-store":
-                    return "https://www.xbox.com/search?q=" + query;
-                case "nintendo":
-                    return "https://www.nintendo.com/search/?q=" + query;
-                case "steam":
-                    return "https://store.steampowered.com/search/?term=" + query;
-                case "epic-games":
-                    return "https://store.epicgames.com/browse?q=" + query;
-                case "gog":
-                    return "https://www.gog.com/en/games?query=" + query;
-                default:
-                    return ""; 
+                case "playstation-store": return "https://store.playstation.com/search/" + query;
+                case "xbox-store": return "https://www.xbox.com/search?q=" + query;
+                case "nintendo": return "https://www.nintendo.com/search/?q=" + query;
+                case "steam": return "https://store.steampowered.com/search/?term=" + query;
+                case "epic-games": return "https://store.epicgames.com/browse?q=" + query;
+                case "gog": return "https://www.gog.com/en/games?query=" + query;
+                default: return ""; 
             }
         } catch (Exception e) {
             return "";
         }
     }
 
-    // --- UTILIDADES GENERALES ---
+    private static String getStoreNameFromUrl(String url) {
+        if (url.contains("store.steampowered.com")) return "Steam";
+        if (url.contains("store.playstation.com")) return "PlayStation Store";
+        if (url.contains("epicgames.com")) return "Epic Games";
+        if (url.contains("gog.com")) return "GOG";
+        if (url.contains("xbox.com")) return "Xbox Store";
+        if (url.contains("nintendo.com")) return "Nintendo eShop";
+        if (url.contains("apple.com")) return "App Store";
+        if (url.contains("play.google.com")) return "Google Play";
+        if (url.contains("itch.io")) return "itch.io";
+        return "Otro";
+    }
 
     private static String extraerValorJsonManual(String json, String key) {
         String search = "\"" + key + "\":";

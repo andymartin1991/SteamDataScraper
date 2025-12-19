@@ -37,40 +37,56 @@ application {
     mainClass = 'SteamScraper'
 }
 
-// --- TAREA PARA EJECUTAR EL COLLECTOR (SQLITE) ---
+// --- TAREAS DE RECOLECCIÓN ---
 tasks.register('runCollector', JavaExec) {
-    group = "Application"
+    group = "1. Recolección"
     description = "Ejecuta el SteamRawCollector con soporte SQLite"
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('SteamRawCollector')
 }
 
 tasks.register('runIgdbCollector', JavaExec) {
-    group = "Application"
+    group = "1. Recolección"
     description = "Ejecuta el IGDBRawCollector con soporte SQLite"
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('IGDBRawCollector')
 }
 
 tasks.register('runRawgCollector', JavaExec) {
-    group = "Application"
+    group = "1. Recolección"
     description = "Ejecuta el RAWGRawCollector con soporte SQLite"
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('RAWGRawCollector')
 }
 
 tasks.register('runRawgDetailCollector', JavaExec) {
-    group = "Application"
+    group = "1. Recolección"
     description = "Descarga los detalles (descripción, etc) de los juegos de RAWG"
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('RAWGDetailCollector')
 }
 
+// --- TAREAS DE PROCESADO (SCRAPING) ---
+tasks.register('runScraper', JavaExec) {
+    group = "2. Procesado"
+    description = "Ejecuta el SteamScraper para procesar el JSON de Steam"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('SteamScraper')
+}
+
 tasks.register('runRawgScraper', JavaExec) {
-    group = "Application"
-    description = "Ejecuta el RAWGScraper para procesar el JSON"
+    group = "2. Procesado"
+    description = "Ejecuta el RAWGScraper para procesar el JSON de RAWG"
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('RAWGScraper')
+}
+
+// --- TAREA DE UNIFICACIÓN GLOBAL ---
+tasks.register('runGlobalUnion', JavaExec) {
+    group = "3. Unificación"
+    description = "Unifica los JSON de Steam y RAWG en un archivo global"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('GlobalUnion')
 }
 // -------------------------------------------------
 

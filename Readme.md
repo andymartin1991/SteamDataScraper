@@ -1,43 +1,78 @@
-# 🚂 VoxGamer Data Sync (Steam Adapter)
+# 🎮 VoxGamer Data Sync Engine
 
-Este proyecto es el núcleo del sistema de datos de **VoxGamer**. Su función es sincronizar el catálogo completo de Steam, filtrar el contenido relevante y generar una base de datos estandarizada y agnóstica de la plataforma.
+Este proyecto es el motor de sincronización de datos para **VoxGamer**. Su función es recolectar, filtrar y estandarizar el catálogo de juegos de múltiples ecosistemas (PC y consolas) para crear una base de datos unificada.
 
-## 🏗️ Arquitectura ELT (Extract, Load, Transform)
+## 🏗️ Arquitectura Multi-Fuente (ELT)
 
-El sistema se divide en dos procesos principales que conforman una arquitectura de datos profesional:
+El sistema utiliza una arquitectura ELT (Extract, Load, Transform) modular, donde cada fuente de datos tiene su propio pipeline de recolección y procesado, finalizando en una etapa de unificación global.
 
-### 1. `SteamRawCollector` (Fase de Extracción y Carga)
+### Fuentes de Datos
+1.  **Steam (PC):** A través de la API oficial de Steam.
+2.  **RAWG (Consolas):** A través de la API de RAWG para PlayStation, Xbox y Nintendo.
 
-Es el componente encargado de la recolección masiva y el filtrado inicial. Su objetivo es crear una copia local y robusta de los datos de Steam.
+---
 
-*   **Funcionamiento Detallado:**
-    1.  **Carga de Estado Previo:** Al iniciar, consulta la base de datos `steam_raw.sqlite` para obtener dos listas de IDs:
-        *   Juegos ya procesados y finalizados.
-        *   IDs ignorados (DLCs, demos, vídeos, etc.).
-    2.  **Descarga del Catálogo Completo:** Se conecta a la API de Steam para descargar la lista completa de `app_id` existentes.
-    3.  **Detección de Novedades:** Compara el catálogo de Steam con los IDs locales y crea una lista de "pendientes", que incluye tanto juegos nuevos como aquellos que estaban en "Coming Soon" y podrían haber sido lanzados.
-    4.  **Procesamiento en Lotes:** Itera sobre la lista de pendientes y, para cada `app_id`:
-        *   Descarga su JSON de detalles desde la API de Steam.
-        *   **Filtro Inteligente:** Analiza el JSON para determinar el tipo de contenido.
-            *   Si es un **juego** (`"type":"game"`), lo guarda o actualiza en la tabla `steam_raw_data`.
-            *   Si es cualquier otra cosa (DLC, demo, banda sonora), lo añade a la tabla `steam_ignored_ids` para no volver a consultarlo en el futuro.
-    5.  **Manejo de Errores y Límites:** Está preparado para manejar errores de red y los límites de peticiones de la API de Steam (error 429), reintentando automáticamente tras un tiempo de espera.
+## ⚙️ Pipeline de Steam
 
-### 2. `SteamScraper` (Fase de Transformación)
+### 1. `SteamRawCollector` (Extracción y Carga)
+Crea una copia local y robusta de los datos de Steam en `steam_raw.sqlite`.
+- **Filtro Inteligente:** Descarga el catálogo completo y distingue entre juegos, DLCs y otro software, guardando los no-juegos en `steam_ignored_ids`.
+- **Actualización de "Coming Soon":** Vuelve a verificar juegos que aún no han sido lanzados para detectar su fecha de salida.
 
-Este componente se encarga de transformar los datos crudos en un formato limpio, estandarizado y altamente optimizado para su distribución.
+### 2. `SteamScraper` (Transformación)
+Lee `steam_raw.sqlite` y genera un archivo `steam_games.json.gz` con un formato de datos universal.
+- **Estandarización:** Normaliza fechas, genera slugs, limpia descripciones y extrae datos clave como idiomas, Metacritic y requisitos de almacenamiento.
+- **Formato Final:** Añade el campo `"plataformas": ["PC"]` para la unificación.
 
-*   **Funcionamiento Detallado:**
-    1.  **Conexión a la Base de Datos:** Lee todos los registros de la tabla `steam_raw_data` de `steam_raw.sqlite`.
-    2.  **Procesamiento Individual:** Para cada juego, realiza las siguientes transformaciones:
-        *   **Validación:** Descarta juegos marcados como `"coming_soon":true` o aquellos que no tienen una fecha de lanzamiento válida.
-        *   **Extracción de Datos:** Parsea manualmente el JSON para extraer campos clave como título, descripción, imagen principal, géneros, etc.
-        *   **Limpieza y Estandarización:**
-            *   Genera un `slug` a partir del título (ej: "The Witcher 3" -> "the-witcher-3").
-            *   Convierte la fecha de lanzamiento a formato `YYYY-MM-DD`.
-            *   Limpia y formatea la lista de idiomas (separando voces y textos).
-            *   Extrae el `metacritic` score y el espacio en disco requerido.
-    3.  **Generación del JSON Comprimido:** Construye un objeto JSON con la estructura final y lo escribe directamente en formato **GZIP** (`steam_games.json.gz`). Esto reduce drásticamente el tamaño del archivo final, facilitando su almacenamiento y transferencia.
+---
+
+## 🎮 Pipeline de RAWG (Consolas)
+
+### 1. `RAWGRawCollector` (Extracción y Carga)
+Descarga el catálogo de juegos para las plataformas de consola seleccionadas (PS5, Xbox Series, Switch) y lo guarda en `rawg_raw.sqlite`.
+- **Optimización:** Ordena los resultados por fecha de actualización y utiliza una estrategia de "parada temprana" para hacer las sincronizaciones diarias extremadamente rápidas.
+- **Robustez:** Reintenta automáticamente las peticiones si la API de RAWG devuelve errores temporales (ej. 502).
+
+### 2. `RAWGDetailCollector` (Enriquecimiento Inteligente)
+Este script enriquece los datos de `rawg_raw.sqlite` de forma eficiente, distinguiendo entre juegos nuevos y existentes.
+- **Modo Inteligente:** Identifica qué juegos necesitan ser procesados:
+    - **Juegos Nuevos:** Aquellos que no tienen ninguna entrada en la tabla `rawg_details_data`.
+    - **Juegos a Actualizar:** Aquellos que ya tienen la ficha de detalle pero les falta la información de tiendas (`json_stores` es nulo).
+- **Proceso de Enriquecimiento:**
+    - Para **juegos nuevos**, descarga tanto la ficha de detalle (`/games/{id}`) como los enlaces a tiendas (`/games/{id}/stores`).
+    - Para **juegos a actualizar**, solo descarga la información de las tiendas, ahorrando tiempo y llamadas a la API.
+- **Manejo de Errores:** Si un juego devuelve un error 404 (no encontrado), lo marca internamente para no volver a intentarlo en futuras ejecuciones.
+
+### 3. `RAWGScraper` (Transformación)
+Lee `rawg_raw.sqlite` (ambas tablas, `rawg_raw_data` y `rawg_details_data`) y genera `rawg_games.json.gz`.
+- **Fusión de Datos:** Combina la información básica de la lista con los datos enriquecidos de detalle y tiendas.
+- **Lógica de Tiendas Mejorada:**
+    - **Prioriza URL Directa:** Si la columna `json_stores` contiene datos, extrae de ahí la URL final de la tienda.
+    - **Fallback a Búsqueda:** Si `json_stores` está vacío (para datos antiguos o si la API falló), genera una URL de búsqueda genérica como antes.
+- **Inferencia de Datos:**
+    - Deduce si un juego es `"is_free": true` buscando el tag "Free to Play".
+    - Infiere la plataforma "PC" si el juego se vende en tiendas como Steam, Epic o GOG.
+
+---
+
+## 🌍 Unificación Global
+
+### `GlobalUnion` (Fusión Final)
+Esta es la etapa final del proceso. Toma los archivos `steam_games.json.gz` y `rawg_games.json.gz` y los fusiona en un único archivo maestro: `global_games.json.gz`.
+
+**Lógica de Fusión:**
+1.  **Carga en Memoria:** Carga todos los juegos de Steam en un mapa para acceso rápido.
+2.  **Iteración y Cruce:** Recorre los juegos de RAWG uno a uno.
+    *   **Si el juego existe en Steam (Coincidencia por Slug):**
+        *   Toma los datos de Steam como base (más fiables para PC).
+        *   **Enriquece:** Añade plataformas, géneros y galerías de RAWG que no estén en Steam.
+        *   **Tiendas:** Añade enlaces a tiendas de consola (PS Store, eShop) provenientes de RAWG.
+        *   **Metacritic:** Se queda con la puntuación más alta de las dos fuentes.
+    *   **Si el juego NO existe en Steam:**
+        *   Añade el juego de RAWG tal cual (exclusivo de consola).
+3.  **Completado:** Finalmente, añade todos los juegos de Steam que no fueron cruzados (exclusivos de PC).
+
+---
 
 ## 🚀 Cómo Ejecutar
 
@@ -46,41 +81,49 @@ Este componente se encarga de transformar los datos crudos en un formato limpio,
 *   Gradle.
 
 ### Ejecución
-Puedes ejecutar cada fase de forma independiente usando las tareas de Gradle:
+Puedes ejecutar cada fase de forma independiente usando las tareas de Gradle. El orden recomendado es:
 
-1.  Abre el panel de **Gradle** en tu IDE.
-2.  Ve a `Tasks` -> `Application`.
-3.  Ejecuta la tarea que necesites:
-    *   **`runCollector`**: Para la fase de extracción y carga.
-    *   **`runScraper`**: Para la fase de transformación (Genera el `.gz`).
+1.  **Recolectar Datos:**
+    *   `runCollector` (para Steam)
+    *   `runRawgCollector` (para consolas)
+    *   `runRawgDetailCollector` (para enriquecer datos de consolas)
+
+2.  **Procesar y Generar JSONs Parciales:**
+    *   `runScraper` (para Steam)
+    *   `runRawgScraper` (para consolas)
+
+3.  **Unificación Final:**
+    *   `runGlobalUnion` (Genera `global_games.json.gz`)
 
 O desde la terminal:
 ```bash
-# Para recolectar datos de Steam
+# 1. Recolección
 ./gradlew runCollector
+./gradlew runRawgCollector
+./gradlew runRawgDetailCollector
 
-# Para transformar los datos y generar el JSON comprimido
+# 2. Procesado
 ./gradlew runScraper
+./gradlew runRawgScraper
+
+# 3. Unificación
+./gradlew runGlobalUnion
 ```
 
-## 📂 Estructura de Datos (SQLite)
+## 📂 Estructura de Datos (SQLite y JSON)
 
-El archivo `steam_raw.sqlite` contiene dos tablas clave:
-
-*   **`steam_raw_data`**:
-    *   `app_id` (PK): ID de Steam.
-    *   `json_data`: El JSON completo y original devuelto por la API.
-    *   `fecha_sync`: Cuándo se actualizó por última vez.
-
-*   **`steam_ignored_ids`**:
-    *   `app_id` (PK): IDs de DLCs y contenido no deseado.
+*   **`steam_raw.sqlite`**: Datos crudos de Steam.
+*   **`rawg_raw.sqlite`**: Datos crudos de RAWG (lista + detalles + tiendas).
+*   **`steam_games.json.gz`**: Catálogo procesado de Steam.
+*   **`rawg_games.json.gz`**: Catálogo procesado de RAWG.
+*   **`global_games.json.gz`**: **Archivo Maestro Final** con todos los juegos unificados.
 
 ## 🛠️ Tecnologías
-*   **Java 17**: Lenguaje principal.
-*   **SQLite**: Almacenamiento intermedio robusto y portable.
-*   **GZIP**: Compresión de datos de salida.
-*   **Gradle**: Gestión de dependencias y tareas.
-*   **Steam Web API**: Fuente de datos.
+*   **Java 17**
+*   **SQLite**
+*   **Jackson (JSON Processing)**
+*   **GZIP**
+*   **Gradle**
 
 ---
 *VoxGamer Data Engineering Team*
