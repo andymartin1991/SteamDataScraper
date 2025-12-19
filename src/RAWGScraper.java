@@ -7,6 +7,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -83,10 +85,22 @@ public class RAWGScraper {
 
     private static String procesarJuego(String jsonBasic, String jsonDetail, String jsonStores) {
         try {
+            // Filtro 1: Descartar juegos "To Be Announced"
             if (jsonBasic.contains("\"tba\":true")) return null;
             
-            String fecha = extraerValorJsonManual(jsonBasic, "released");
-            if (fecha == null || fecha.isEmpty()) return null;
+            String fechaStr = extraerValorJsonManual(jsonBasic, "released");
+            if (fechaStr == null || fechaStr.isEmpty()) return null;
+
+            // Filtro 2: Descartar juegos con fecha de lanzamiento futura
+            try {
+                LocalDate fechaLanzamiento = LocalDate.parse(fechaStr, DateTimeFormatter.ISO_LOCAL_DATE);
+                if (fechaLanzamiento.isAfter(LocalDate.now())) {
+                    return null; // El juego es un próximo lanzamiento, lo descartamos
+                }
+            } catch (Exception e) {
+                // Si la fecha tiene un formato raro, lo descartamos por seguridad
+                return null;
+            }
 
             String titulo = extraerValorJsonManual(jsonBasic, "name");
             String slug = extraerValorJsonManual(jsonBasic, "slug");
@@ -118,7 +132,7 @@ public class RAWGScraper {
             sb.append("    \"slug\": \"").append(slug).append("\",\n");
             sb.append("    \"titulo\": \"").append(limpiarTexto(titulo)).append("\",\n");
             sb.append("    \"descripcion_corta\": \"").append(limpiarTexto(acortarDescripcion(descripcion))).append("\",\n"); 
-            sb.append("    \"fecha_lanzamiento\": \"").append(fecha).append("\",\n");
+            sb.append("    \"fecha_lanzamiento\": \"").append(fechaStr).append("\",\n");
             sb.append("    \"storage\": \"N/A\",\n"); 
             
             sb.append("    \"generos\": ").append(listaAJson(generos)).append(",\n");
