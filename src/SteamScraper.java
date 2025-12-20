@@ -90,6 +90,9 @@ public class SteamScraper {
             String slug = generarSlug(titulo);
             String descCorta = extraerDescripcionCorta(json);
             String imgPrincipal = extraerValorJsonManual(json, "header_image");
+            if (imgPrincipal != null) {
+                imgPrincipal = imgPrincipal.replace("\\/", "/");
+            }
             String storage = extraerTamano(json);
             
             List<String> generos = extraerGeneros(json);

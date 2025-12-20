@@ -126,18 +126,25 @@ public class RAWGScraper {
                     descripcion = extraerValorJsonManual(jsonDetail, "description");
                 }
             }
+            
+            String descripcionCorta = acortarDescripcion(descripcion);
+            
+            // Filtro 3: Si no hay descripción, NO exportamos el juego (esperamos a que el Collector la consiga)
+            if (descripcionCorta.isEmpty()) {
+                return null;
+            }
 
             StringBuilder sb = new StringBuilder();
             sb.append("  {\n");
             sb.append("    \"slug\": \"").append(slug).append("\",\n");
             sb.append("    \"titulo\": \"").append(limpiarTexto(titulo)).append("\",\n");
-            sb.append("    \"descripcion_corta\": \"").append(limpiarTexto(acortarDescripcion(descripcion))).append("\",\n"); 
+            sb.append("    \"descripcion_corta\": \"").append(limpiarTexto(descripcionCorta)).append("\",\n"); 
             sb.append("    \"fecha_lanzamiento\": \"").append(fechaStr).append("\",\n");
             sb.append("    \"storage\": \"N/A\",\n"); 
             
             sb.append("    \"generos\": ").append(listaAJson(generos)).append(",\n");
             sb.append("    \"plataformas\": ").append(listaAJson(plataformasFinales)).append(",\n"); 
-            sb.append("    \"img_principal\": \"").append(imgPrincipal).append("\",\n");
+            sb.append("    \"img_principal\": \"").append(limpiarTexto(imgPrincipal)).append("\",\n");
             sb.append("    \"galeria\": ").append(listaAJson(galeria)).append(",\n");
             
             sb.append("    \"idiomas\": {\n"); 
@@ -399,7 +406,11 @@ public class RAWGScraper {
     }
 
     private static String limpiarTexto(String t) {
-        return (t == null) ? "" : t.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", "");
+        if (t == null) return "";
+        return t.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
     }
     
     private static String acortarDescripcion(String desc) {

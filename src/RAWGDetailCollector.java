@@ -15,20 +15,22 @@ public class RAWGDetailCollector {
     private static final String API_KEY = "867e9e7e82c3459593e684c2664243bd";
     private static final String DB_FILE = "rawg_raw.sqlite";
     
-    // Configuración: Días a esperar antes de volver a comprobar un juego que dio tiendas vacías
+    // Configuración: Días a esperar antes de volver a comprobar un juego incompleto
     private static final int DIAS_COOLDOWN_VACIOS = 3;
 
     private static class GameTask {
         int id;
         boolean tieneDetalle;
         boolean esError404;
-        boolean esReintentoVacio;
+        boolean esReintentoVacio; // Stores vacíos
+        boolean descripcionVacia; // Descripción vacía
 
-        public GameTask(int id, boolean tieneDetalle, boolean esError404, boolean esReintentoVacio) {
+        public GameTask(int id, boolean tieneDetalle, boolean esError404, boolean esReintentoVacio, boolean descripcionVacia) {
             this.id = id;
             this.tieneDetalle = tieneDetalle;
             this.esError404 = esError404;
             this.esReintentoVacio = esReintentoVacio;
+            this.descripcionVacia = descripcionVacia;
         }
     }
 
@@ -47,10 +49,20 @@ public class RAWGDetailCollector {
                 try {
                     if (tarea.esError404) continue;
 
-                    // CASO: Ya tenemos detalle, falta Store (o es reintento tras cooldown)
+                    // CASO: Ya tenemos detalle previo
                     if (tarea.tieneDetalle) {
-                        String motivo = tarea.esReintentoVacio ? "Reintento (Vacío hace >" + DIAS_COOLDOWN_VACIOS + "d)" : "Nuevo";
                         
+                        // SUB-CASO: Descripción vacía -> FORZAR REDESCARGA COMPLETA
+                        if (tarea.descripcionVacia) {
+                            System.out.println("🔄 [" + procesados + "/" + pendientes.size() + "] ID " + tarea.id + ": Descripción vacía. Reintentando descarga completa...");
+                            procesarDescargaCompleta(tarea.id);
+                            procesados++;
+                            Thread.sleep(600);
+                            continue; 
+                        }
+
+                        // SUB-CASO: Solo faltan Stores (o reintento de stores vacíos)
+                        String motivo = tarea.esReintentoVacio ? "Reintento Stores (Vacío hace >" + DIAS_COOLDOWN_VACIOS + "d)" : "Nuevo Stores";
                         String jsonStores = descargarStoresJuego(tarea.id);
                         
                         if (jsonStores == null || "404".equals(jsonStores)) {
@@ -60,7 +72,6 @@ public class RAWGDetailCollector {
                         actualizarStores(tarea.id, jsonStores);
                         procesados++;
                         
-                        // Feedback visual diferente si sigue vacío
                         if (jsonStores.contains("\"results\":[]") || jsonStores.equals("[]")) {
                             System.out.println("⚠️ [" + procesados + "/" + pendientes.size() + "] ID " + tarea.id + ": Stores siguen vacíos. Se reintentará en " + DIAS_COOLDOWN_VACIOS + " días.");
                         } else {
@@ -69,29 +80,11 @@ public class RAWGDetailCollector {
                         
                         Thread.sleep(600); 
                     } 
-                    // CASO: Juego totalmente nuevo
+                    // CASO: Juego totalmente nuevo (sin detalle previo)
                     else {
-                        String jsonDetalle = descargarDetalleJuego(tarea.id);
-
-                        if ("404".equals(jsonDetalle)) {
-                            System.err.println("⚠️ ID " + tarea.id + " no encontrado (404). Marcando error.");
-                            guardarNuevoCompleto(tarea.id, "{\"error\":\"404_not_found\"}", "{\"results\":[]}");
-                            continue;
-                        }
-
-                        if (jsonDetalle != null) {
-                            String jsonStores = descargarStoresJuego(tarea.id);
-                            if (jsonStores == null || "404".equals(jsonStores)) {
-                                jsonStores = "{\"results\":[]}";
-                            }
-
-                            guardarNuevoCompleto(tarea.id, jsonDetalle, jsonStores);
-                            procesados++;
-                            System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Detalle y Stores descargados: ID " + tarea.id);
-                        } else {
-                            System.err.println("⚠️ No se pudo bajar detalle para ID " + tarea.id);
-                        }
-                        
+                        procesarDescargaCompleta(tarea.id);
+                        procesados++;
+                        System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Nuevo Detalle y Stores descargados: ID " + tarea.id);
                         Thread.sleep(600); 
                     }
 
@@ -104,6 +97,26 @@ public class RAWGDetailCollector {
 
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private static void procesarDescargaCompleta(int gameId) {
+        String jsonDetalle = descargarDetalleJuego(gameId);
+
+        if ("404".equals(jsonDetalle)) {
+            System.err.println("⚠️ ID " + gameId + " no encontrado (404). Marcando error.");
+            guardarNuevoCompleto(gameId, "{\"error\":\"404_not_found\"}", "{\"results\":[]}");
+            return;
+        }
+
+        if (jsonDetalle != null) {
+            String jsonStores = descargarStoresJuego(gameId);
+            if (jsonStores == null || "404".equals(jsonStores)) {
+                jsonStores = "{\"results\":[]}";
+            }
+            guardarNuevoCompleto(gameId, jsonDetalle, jsonStores);
+        } else {
+            System.err.println("⚠️ No se pudo bajar detalle para ID " + gameId);
         }
     }
 
@@ -138,10 +151,6 @@ public class RAWGDetailCollector {
     private static List<GameTask> obtenerTareasPendientes() {
         List<GameTask> tareas = new ArrayList<>();
         
-        // LÓGICA DE COOLDOWN:
-        // 1. Si json_stores es NULL -> Pendiente (Prioridad)
-        // 2. Si json_stores es VACÍO -> Pendiente SOLO SI fecha_sync < (Hoy - 3 días)
-        
         String sql = "SELECT r.game_id, " +
                      "d.json_full, d.json_stores, d.fecha_sync, " +
                      "CASE WHEN d.json_full IS NOT NULL THEN 1 ELSE 0 END as tiene_detalle, " +
@@ -155,6 +164,9 @@ public class RAWGDetailCollector {
                      "OR d.json_stores IS NULL " +
                      // Caso 3: Store vacío Y fecha antigua (Cooldown)
                      "OR ( (d.json_stores LIKE '%\"results\":[]%' OR d.json_stores = '[]') " +
+                     "     AND d.fecha_sync < datetime('now', '-" + DIAS_COOLDOWN_VACIOS + " days') )" +
+                     // Caso 4: Descripción vacía Y fecha antigua (Cooldown)
+                     "OR ( (d.json_full LIKE '%\"description\":\"\"%' OR d.json_full LIKE '%\"description_raw\":\"\"%') " +
                      "     AND d.fecha_sync < datetime('now', '-" + DIAS_COOLDOWN_VACIOS + " days') )";
         
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
@@ -165,13 +177,17 @@ public class RAWGDetailCollector {
                 if (rs.getBoolean("es_error")) continue;
 
                 String jsonStores = rs.getString("json_stores");
-                boolean esVacio = jsonStores != null && (jsonStores.contains("\"results\":[]") || jsonStores.equals("[]"));
+                String jsonFull = rs.getString("json_full");
+                
+                boolean esVacioStores = (jsonStores != null && (jsonStores.contains("\"results\":[]") || jsonStores.equals("[]")));
+                boolean esVacioDesc = (jsonFull != null && (jsonFull.contains("\"description\":\"\"") || jsonFull.contains("\"description_raw\":\"\"")));
 
                 tareas.add(new GameTask(
                     rs.getInt("game_id"),
                     rs.getBoolean("tiene_detalle"),
                     rs.getBoolean("es_error"),
-                    esVacio
+                    esVacioStores,
+                    esVacioDesc
                 ));
             }
         } catch (Exception e) {

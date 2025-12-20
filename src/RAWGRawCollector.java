@@ -10,8 +10,10 @@ import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -23,7 +25,7 @@ public class RAWGRawCollector {
     
     private static final String PLATFORMS = "187,186,7"; 
     
-    // Si encontramos 200 juegos seguidos (5 páginas) que ya tenemos, paramos.
+    // Si encontramos 200 juegos seguidos (5 páginas) que ya tenemos Y no han cambiado, paramos.
     private static final int UMBRAL_PARADA_TEMPRANA = 200; 
 
     public static void main(String[] args) {
@@ -39,17 +41,18 @@ public class RAWGRawCollector {
 
             setupDatabase();
 
-            Set<Integer> idsYaProcesados = cargarIdsYaProcesados();
-            System.out.println("📚 Base de datos: " + idsYaProcesados.size() + " juegos ya registrados.");
+            // Ahora cargamos un mapa ID -> FechaActualización para detectar cambios
+            Map<Integer, String> juegosYaProcesados = cargarJuegosYaProcesados();
+            System.out.println("📚 Base de datos: " + juegosYaProcesados.size() + " juegos ya registrados.");
             
-            descargarJuegos(idsYaProcesados);
+            descargarJuegos(juegosYaProcesados);
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private static void descargarJuegos(Set<Integer> idsProcesados) {
+    private static void descargarJuegos(Map<Integer, String> juegosProcesados) {
         int page = 1;
         boolean hayMasDatos = true;
         int totalJuegosAPI = -1;
@@ -61,7 +64,7 @@ public class RAWGRawCollector {
 
         while (hayMasDatos) {
             try {
-                // AÑADIDO: ordering=-updated para traer primero lo último modificado/creado
+                // ordering=-updated para traer primero lo último modificado/creado
                 String urlString = "https://api.rawg.io/api/games?key=" + API_KEY + 
                                    "&platforms=" + PLATFORMS + 
                                    "&ordering=-updated" + 
@@ -94,30 +97,47 @@ public class RAWGRawCollector {
                 for (String juegoJson : juegosJson) {
                     procesadosEnSesion++;
                     int gameId = extraerIdDelJuego(juegoJson);
+                    String fechaUpdateNueva = extraerFechaUpdate(juegoJson);
                     
                     if (gameId != -1) {
-                        if (!idsProcesados.contains(gameId)) {
-                            // ES NUEVO O ACTUALIZADO
+                        boolean esNuevo = !juegosProcesados.containsKey(gameId);
+                        boolean esActualizacion = false;
+
+                        if (!esNuevo) {
+                            String fechaUpdateGuardada = juegosProcesados.get(gameId);
+                            // Si la fecha nueva es distinta (asumimos más reciente por el orden de la API), actualizamos
+                            if (fechaUpdateNueva != null && !fechaUpdateNueva.equals(fechaUpdateGuardada)) {
+                                esActualizacion = true;
+                            }
+                        }
+
+                        if (esNuevo || esActualizacion) {
+                            // ES NUEVO O ACTUALIZADO -> GUARDAR
                             guardarJuego(gameId, juegoJson);
-                            idsProcesados.add(gameId); // Lo añadimos para no repetirlo
+                            juegosProcesados.put(gameId, fechaUpdateNueva); // Actualizamos memoria
+                            
                             guardadosEnSesion++;
                             novedadesEnPagina++;
                             consecutivosSinNovedad = 0; // Reset contador
+                            
+                            if (esActualizacion) {
+                                System.out.println("   -> 🔄 Actualizado ID " + gameId + " (Fecha antigua: " + juegosProcesados.get(gameId) + " -> Nueva: " + fechaUpdateNueva + ")");
+                            }
                         } else {
-                            // YA LO TENEMOS
+                            // YA LO TENEMOS Y NO HA CAMBIADO
                             consecutivosSinNovedad++;
                         }
                     }
                 }
 
-                String progreso = String.format("🚀 Pág %d | Nuevos: %d | Sin Novedad Seguidos: %d/%d", 
+                String progreso = String.format("🚀 Pág %d | Nuevos/Upd: %d | Sin Cambios Seguidos: %d/%d", 
                                                 page, novedadesEnPagina, consecutivosSinNovedad, UMBRAL_PARADA_TEMPRANA);
                 System.out.println(progreso);
 
                 // LÓGICA DE PARADA TEMPRANA
                 if (consecutivosSinNovedad >= UMBRAL_PARADA_TEMPRANA) {
                     System.out.println("✅ Se alcanzó el umbral de parada temprana. El resto de juegos ya están actualizados.");
-                    System.out.println("   (Últimos " + consecutivosSinNovedad + " juegos ya existían en DB)");
+                    System.out.println("   (Últimos " + consecutivosSinNovedad + " juegos ya existían sin cambios)");
                     hayMasDatos = false;
                     break;
                 }
@@ -139,7 +159,7 @@ public class RAWGRawCollector {
         System.out.println("   -> Nuevos/Actualizados guardados: " + guardadosEnSesion);
     }
 
-    // --- MÉTODOS AUXILIARES (Sin cambios) ---
+    // --- MÉTODOS AUXILIARES ---
     
     private static int extraerCount(String json) {
         Pattern p = Pattern.compile("\"count\":(\\d+)");
@@ -186,17 +206,24 @@ public class RAWGRawCollector {
     }
 
     private static int extraerIdDelJuego(String json) {
+        // Intentamos buscar ID cerca de "updated" primero para mayor precisión en el contexto
         Pattern pContext = Pattern.compile("\"updated\":\"[^\"]+\",\"id\":(\\d+)");
         Matcher mContext = pContext.matcher(json);
         if (mContext.find()) return Integer.parseInt(mContext.group(1));
         
-        int lastId = -1;
+        // Fallback genérico
         Pattern p = Pattern.compile("\"id\":(\\d+)");
         Matcher m = p.matcher(json);
-        while(m.find()){
-            lastId = Integer.parseInt(m.group(1));
-        }
-        return lastId;
+        if (m.find()) return Integer.parseInt(m.group(1));
+        
+        return -1;
+    }
+    
+    private static String extraerFechaUpdate(String json) {
+        Pattern p = Pattern.compile("\"updated\":\"([^\"]+)\"");
+        Matcher m = p.matcher(json);
+        if (m.find()) return m.group(1);
+        return null;
     }
 
     private static void setupDatabase() {
@@ -216,38 +243,31 @@ public class RAWGRawCollector {
         }
     }
 
-    private static Set<Integer> cargarIdsYaProcesados() {
-        Set<Integer> ids = new HashSet<>();
+    private static Map<Integer, String> cargarJuegosYaProcesados() {
+        Map<Integer, String> juegos = new HashMap<>();
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
              Statement stmt = conn.createStatement()) {
+            
+            // Ignorados (no nos interesa su fecha, solo que existen para no procesarlos si estuvieran en raw_data)
+            // Aunque en este diseño, rawg_ignored_ids parece usarse para exclusiones manuales.
+            // Lo mantenemos por compatibilidad, asignando fecha null o dummy.
             ResultSet rsIgnored = stmt.executeQuery("SELECT game_id FROM rawg_ignored_ids");
-            while (rsIgnored.next()) ids.add(rsIgnored.getInt("game_id"));
+            while (rsIgnored.next()) juegos.put(rsIgnored.getInt("game_id"), "IGNORED");
             
             ResultSet rsGames = stmt.executeQuery("SELECT game_id, json_data FROM rawg_raw_data");
-            DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-            LocalDate hoy = LocalDate.now();
-
+            
             while (rsGames.next()) {
                 int id = rsGames.getInt("game_id");
                 String json = rsGames.getString("json_data");
-                boolean esFinalizado = false;
-
-                if (json.contains("\"tba\":true")) {
-                    esFinalizado = false; 
-                } else {
-                    Pattern p = Pattern.compile("\"released\":\"(\\d{4}-\\d{2}-\\d{2})\"");
-                    Matcher m = p.matcher(json);
-                    if (m.find()) {
-                        try {
-                            LocalDate fechaLanzamiento = LocalDate.parse(m.group(1), dtf);
-                            if (fechaLanzamiento.isBefore(hoy)) esFinalizado = true; 
-                        } catch (Exception e) {}
-                    }
-                }
-                if (esFinalizado) ids.add(id);
+                String fechaUpdate = extraerFechaUpdate(json);
+                
+                // Si no tiene fecha update, ponemos una muy antigua
+                if (fechaUpdate == null) fechaUpdate = "1970-01-01T00:00:00";
+                
+                juegos.put(id, fechaUpdate);
             }
         } catch (Exception e) {}
-        return ids;
+        return juegos;
     }
 
     private static void guardarJuego(int gameId, String json) {
