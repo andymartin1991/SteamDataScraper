@@ -23,14 +23,16 @@ public class RAWGRawCollector {
     private static final String API_KEY = "867e9e7e82c3459593e684c2664243bd";
     private static final String DB_FILE = "rawg_raw.sqlite";
     
-    private static final String PLATFORMS = "187,186,7"; 
+    // AL QUITAR EL FILTRO DE PLATAFORMAS, TRAEMOS TODO EL CATÁLOGO DE RAWG (Cualquier consola/PC)
+    // private static final String PLATFORMS = "4,187,186,7,18,1,5,6,26,24,43"; 
     
-    // Si encontramos 200 juegos seguidos (5 páginas) que ya tenemos Y no han cambiado, paramos.
-    private static final int UMBRAL_PARADA_TEMPRANA = 200; 
+    // Si encontramos 1000 juegos seguidos (25 páginas) que ya tenemos Y no han cambiado, paramos.
+    // Aumentado de 200 a 1000 para ser más tolerante en escaneos profundos.
+    private static final int UMBRAL_PARADA_TEMPRANA = 1000; 
 
     public static void main(String[] args) {
         try {
-            System.out.println("🚀 Iniciando RAWGRawCollector (Optimizado: Orden por Actualización + Parada Temprana)...");
+            System.out.println("🚀 Iniciando RAWGRawCollector (MODO TOTAL: Todo el catálogo)...");
 
             try {
                 Class.forName("org.sqlite.JDBC");
@@ -43,34 +45,38 @@ public class RAWGRawCollector {
 
             // Ahora cargamos un mapa ID -> FechaActualización para detectar cambios
             Map<Integer, String> juegosYaProcesados = cargarJuegosYaProcesados();
-            System.out.println("📚 Base de datos: " + juegosYaProcesados.size() + " juegos ya registrados.");
+            int totalEnBD = juegosYaProcesados.size();
+            System.out.println("📚 Base de datos: " + totalEnBD + " juegos ya registrados.");
             
-            descargarJuegos(juegosYaProcesados);
+            descargarJuegos(juegosYaProcesados, totalEnBD);
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private static void descargarJuegos(Map<Integer, String> juegosProcesados) {
+    private static void descargarJuegos(Map<Integer, String> juegosProcesados, int totalEnBD) {
         int page = 1;
         boolean hayMasDatos = true;
         int totalJuegosAPI = -1;
         int procesadosEnSesion = 0;
         int guardadosEnSesion = 0;
         int consecutivosSinNovedad = 0;
+        
+        // Si tenemos menos del 10% del catálogo estimado (aprox 900k), desactivamos la parada temprana
+        // para forzar un llenado inicial masivo.
+        boolean modoLlenadoMasivo = false;
 
-        System.out.println("☁️ Conectando a RAWG (Plataformas: " + PLATFORMS + " | Orden: Recientes)...");
+        System.out.println("☁️ Conectando a RAWG (Todas las plataformas | Orden: Recientes)...");
 
         while (hayMasDatos) {
             try {
-                // ordering=-updated para traer primero lo último modificado/creado
+                // SIN PARAMETRO PLATFORMS = TODO EL CATÁLOGO
                 String urlString = "https://api.rawg.io/api/games?key=" + API_KEY + 
-                                   "&platforms=" + PLATFORMS + 
                                    "&ordering=-updated" + 
                                    "&page_size=40&page=" + page;
 
-                String jsonResponse = peticionHttpConReintento(urlString);
+                String jsonResponse = peticionHttpConReintentoInfinito(urlString);
 
                 if (jsonResponse == null) {
                     System.out.println("⚠️ Error fatal en página " + page + ". Abortando.");
@@ -81,6 +87,12 @@ public class RAWGRawCollector {
                     totalJuegosAPI = extraerCount(jsonResponse);
                     if (totalJuegosAPI != -1) {
                         System.out.println("📊 Total en API: " + totalJuegosAPI);
+                        
+                        // Chequeo de Modo Llenado Masivo
+                        if (totalEnBD < (totalJuegosAPI * 0.1)) { // Si tenemos menos del 10%
+                            modoLlenadoMasivo = true;
+                            System.out.println("🚨 MODO LLENADO MASIVO ACTIVADO: Se ignorará la parada temprana hasta tener una base sólida.");
+                        }
                     }
                 }
 
@@ -96,6 +108,7 @@ public class RAWGRawCollector {
                 
                 for (String juegoJson : juegosJson) {
                     procesadosEnSesion++;
+                    
                     int gameId = extraerIdDelJuego(juegoJson);
                     String fechaUpdateNueva = extraerFechaUpdate(juegoJson);
                     
@@ -130,12 +143,13 @@ public class RAWGRawCollector {
                     }
                 }
 
-                String progreso = String.format("🚀 Pág %d | Nuevos/Upd: %d | Sin Cambios Seguidos: %d/%d", 
-                                                page, novedadesEnPagina, consecutivosSinNovedad, UMBRAL_PARADA_TEMPRANA);
+                String estadoModo = modoLlenadoMasivo ? "[MASIVO - NO STOP]" : "[NORMAL]";
+                String progreso = String.format("🚀 Pág %d %s | Nuevos/Upd: %d | Sin Cambios Seguidos: %d/%d", 
+                                                page, estadoModo, novedadesEnPagina, consecutivosSinNovedad, UMBRAL_PARADA_TEMPRANA);
                 System.out.println(progreso);
 
-                // LÓGICA DE PARADA TEMPRANA
-                if (consecutivosSinNovedad >= UMBRAL_PARADA_TEMPRANA) {
+                // LÓGICA DE PARADA TEMPRANA (Solo si NO estamos en modo masivo)
+                if (!modoLlenadoMasivo && consecutivosSinNovedad >= UMBRAL_PARADA_TEMPRANA) {
                     System.out.println("✅ Se alcanzó el umbral de parada temprana. El resto de juegos ya están actualizados.");
                     System.out.println("   (Últimos " + consecutivosSinNovedad + " juegos ya existían sin cambios)");
                     hayMasDatos = false;
@@ -292,26 +306,26 @@ public class RAWGRawCollector {
         }
     }
     
-    private static String peticionHttpConReintento(String urlString) {
+    private static String peticionHttpConReintentoInfinito(String urlString) {
         int intentos = 0;
-        while (intentos < 3) {
+        
+        while (true) { // Bucle infinito hasta éxito o error fatal
             try {
                 return peticionHttp(urlString);
             } catch (Exception e) {
                 intentos++;
-                System.err.println("⚠️ Error HTTP (Intento " + intentos + "/3): " + e.getMessage());
-                if (e.getMessage().contains("502") || e.getMessage().contains("500") || e.getMessage().contains("504")) {
-                    System.out.println("⏳ Servidor saturado. Esperando 5s...");
-                    try { Thread.sleep(5000); } catch (InterruptedException ie) {}
-                } else if (e.getMessage().contains("429")) {
-                    System.out.println("⏳ Rate Limit. Esperando 60s...");
+                System.err.println("⚠️ Error HTTP (Intento " + intentos + "): " + e.getMessage());
+                
+                if (e.getMessage().contains("502") || e.getMessage().contains("500") || e.getMessage().contains("504") || e.getMessage().contains("429")) {
+                    System.out.println("⏳ Servidor saturado o Rate Limit. Esperando 60s y reintentando...");
                     try { Thread.sleep(60000); } catch (InterruptedException ie) {}
                 } else {
-                    try { Thread.sleep(1000); } catch (InterruptedException ie) {}
+                    // Errores desconocidos (ej. timeout local), esperamos un poco menos
+                    System.out.println("⏳ Error de conexión. Esperando 10s...");
+                    try { Thread.sleep(10000); } catch (InterruptedException ie) {}
                 }
             }
         }
-        return null;
     }
 
     private static String peticionHttp(String urlString) throws Exception {

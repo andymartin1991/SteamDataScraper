@@ -80,7 +80,13 @@ public class SteamScraper {
 
     private static String procesarJuego(int appId, String json) {
         try {
-            if (!json.contains("\"type\":\"game\"")) return null;
+            // Extraemos el tipo (game, dlc, demo, etc.)
+            String tipo = extraerValorJsonManual(json, "type");
+            
+            // Filtramos lo que no nos interesa, pero ACEPTAMOS "dlc" ahora.
+            if (tipo == null) return null;
+            if (!tipo.equals("game") && !tipo.equals("dlc")) return null; // Solo juegos y DLCs
+            
             if (json.contains("\"coming_soon\":true")) return null; 
             
             String fecha = extraerFechaISO(json); 
@@ -106,6 +112,7 @@ public class SteamScraper {
             sb.append("  {\n");
             sb.append("    \"slug\": \"").append(slug).append("\",\n");
             sb.append("    \"titulo\": \"").append(limpiarTexto(titulo)).append("\",\n");
+            sb.append("    \"tipo\": \"").append(tipo).append("\",\n"); // Nuevo campo tipo
             sb.append("    \"descripcion_corta\": \"").append(limpiarTexto(descCorta)).append("\",\n");
             sb.append("    \"fecha_lanzamiento\": \"").append(fecha).append("\",\n");
             sb.append("    \"storage\": \"").append(storage).append("\",\n");
@@ -125,7 +132,6 @@ public class SteamScraper {
             sb.append("    \"tiendas\": [\n");
             sb.append("      {\n");
             sb.append("        \"tienda\": \"Steam\",\n");
-            // ELIMINADO: "plataforma": "PC"
             sb.append("        \"id_externo\": \"").append(appId).append("\",\n");
             sb.append("        \"url\": \"https://store.steampowered.com/app/").append(appId).append("\",\n");
             sb.append("        \"is_free\": ").append(isFree).append("\n");
@@ -336,7 +342,11 @@ public class SteamScraper {
     }
 
     private static String limpiarTexto(String t) {
-        return (t == null) ? "" : t.replace("\\", "\\\\").replace("\"", "\\\"");
+        if (t == null) return "";
+        return t.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
     }
     
     private static String listaAJson(List<String> lista) {

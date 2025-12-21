@@ -104,6 +104,7 @@ public class RAWGScraper {
 
             String titulo = extraerValorJsonManual(jsonBasic, "name");
             String slug = extraerValorJsonManual(jsonBasic, "slug");
+            String tipo = determinarTipoJuego(jsonBasic, titulo); // Determinar si es juego o DLC
             String imgPrincipal = extraerValorJsonManual(jsonBasic, "background_image");
             int metacritic = extraerMetacritic(jsonBasic);
 
@@ -138,6 +139,7 @@ public class RAWGScraper {
             sb.append("  {\n");
             sb.append("    \"slug\": \"").append(slug).append("\",\n");
             sb.append("    \"titulo\": \"").append(limpiarTexto(titulo)).append("\",\n");
+            sb.append("    \"tipo\": \"").append(tipo).append("\",\n");
             sb.append("    \"descripcion_corta\": \"").append(limpiarTexto(descripcionCorta)).append("\",\n"); 
             sb.append("    \"fecha_lanzamiento\": \"").append(fechaStr).append("\",\n");
             sb.append("    \"storage\": \"N/A\",\n"); 
@@ -161,6 +163,34 @@ public class RAWGScraper {
         } catch (Exception e) {
             return null;
         }
+    }
+    
+    private static String determinarTipoJuego(String jsonBasic, String titulo) {
+        // Prioridad 1: Buscar la etiqueta "DLC"
+        int tagsIdx = jsonBasic.indexOf("\"tags\":[");
+        if (tagsIdx != -1) {
+            int tagsEndIdx = jsonBasic.indexOf("]", tagsIdx);
+            if (tagsEndIdx != -1) {
+                String tagsContent = jsonBasic.substring(tagsIdx, tagsEndIdx);
+                if (tagsContent.contains("\"name\":\"DLC\"")) {
+                    return "dlc";
+                }
+            }
+        }
+        
+        // Prioridad 2: Buscar palabras clave en el título
+        if (titulo != null) {
+            String lowerCaseTitle = titulo.toLowerCase();
+            if (lowerCaseTitle.contains(" dlc") || 
+                lowerCaseTitle.endsWith("- dlc") || 
+                lowerCaseTitle.contains("expansion") || 
+                lowerCaseTitle.contains("season pass")) {
+                return "dlc";
+            }
+        }
+        
+        // Por defecto, es un juego
+        return "game";
     }
     
     private static boolean detectarSiEsGratis(List<String> generos, List<String> tags) {
