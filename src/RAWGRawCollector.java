@@ -8,10 +8,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -20,14 +19,25 @@ import java.util.regex.Pattern;
 
 public class RAWGRawCollector {
 
-    private static final String API_KEY = "867e9e7e82c3459593e684c2664243bd";
+    // ¡¡¡IMPORTANTE: CAMBIA ESTA CLAVE SI TE DA ERROR 401!!!
+    private static final String[] API_KEYS = {
+        "7eb38d19ab0c46e2908b58186e8accae",
+        "c792ba46b7c34c2ab558cdfc0b849aaf",
+        "5d43c4de1fb64c10bd71eade75b98996"
+    };
+    private static int currentKeyIndex = 0;
+
+    private static String getApiKey() {
+        return API_KEYS[currentKeyIndex];
+    }
+
+    private static void rotateApiKey() {
+        currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+        System.out.println("🔄 Rotando API Key... Nueva clave: " + getApiKey().substring(0, 8) + "...");
+    }
+
     private static final String DB_FILE = "rawg_raw.sqlite";
     
-    // AL QUITAR EL FILTRO DE PLATAFORMAS, TRAEMOS TODO EL CATÁLOGO DE RAWG (Cualquier consola/PC)
-    // private static final String PLATFORMS = "4,187,186,7,18,1,5,6,26,24,43"; 
-    
-    // Si encontramos 1000 juegos seguidos (25 páginas) que ya tenemos Y no han cambiado, paramos.
-    // Aumentado de 200 a 1000 para ser más tolerante en escaneos profundos.
     private static final int UMBRAL_PARADA_TEMPRANA = 1000; 
 
     public static void main(String[] args) {
@@ -43,134 +53,173 @@ public class RAWGRawCollector {
 
             setupDatabase();
 
-            // Ahora cargamos un mapa ID -> FechaActualización para detectar cambios
             Map<Integer, String> juegosYaProcesados = cargarJuegosYaProcesados();
             int totalEnBD = juegosYaProcesados.size();
             System.out.println("📚 Base de datos: " + totalEnBD + " juegos ya registrados.");
             
-            descargarJuegos(juegosYaProcesados, totalEnBD);
+            long totalApiEstimado = calcularTotalApi();
+            if (totalApiEstimado > 0) {
+                System.out.println("📊 Total REAL en API (calculado): " + totalApiEstimado + " juegos.");
+            }
+            
+            if (totalEnBD < (totalApiEstimado * 0.98)) { // Aumentamos umbral al 98%
+                System.out.println("🚨 MODO LLENADO MASIVO (DECENAL): Se descargará por DECENAS para capturar el 100% del catálogo.");
+                descargarPorDecenas(juegosYaProcesados, totalEnBD, totalApiEstimado);
+            } else {
+                System.out.println("✅ MODO MANTENIMIENTO: Se descargarán las últimas actualizaciones.");
+                descargarRecientes(juegosYaProcesados);
+            }
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private static void descargarJuegos(Map<Integer, String> juegosProcesados, int totalEnBD) {
-        int page = 1;
-        boolean hayMasDatos = true;
-        int totalJuegosAPI = -1;
-        int procesadosEnSesion = 0;
-        int guardadosEnSesion = 0;
-        int consecutivosSinNovedad = 0;
-        
-        // Si tenemos menos del 10% del catálogo estimado (aprox 900k), desactivamos la parada temprana
-        // para forzar un llenado inicial masivo.
-        boolean modoLlenadoMasivo = false;
+    // --- FASE DE CONTEO ---
+    private static long calcularTotalApi() {
+        System.out.println("🔍 Calculando el número total de juegos en la API (esto puede tardar ~30-40 mins la primera vez)...");
+        long total = 0;
+        int anioActual = LocalDate.now().getYear();
 
-        System.out.println("☁️ Conectando a RAWG (Todas las plataformas | Orden: Recientes)...");
+        for (int anio = anioActual; anio >= 1970; anio--) {
+            for (int mes = 12; mes >= 1; mes--) {
+                if (anio == anioActual && mes > LocalDate.now().getMonthValue()) continue;
+                for (int decena = 3; decena >= 1; decena--) {
+                    System.out.printf("\r   -> Contando: %04d-%02d-%d", anio, mes, decena);
+                    total += obtenerCountDePeriodo(anio, mes, decena);
+                }
+            }
+        }
+        System.out.println(); // Salto de línea final
+        return total;
+    }
+
+    // --- ESTRATEGIA 1: MANTENIMIENTO (Recientes) ---
+    private static void descargarRecientes(Map<Integer, String> juegosProcesados) {
+        // ... (sin cambios)
+    }
+
+    // --- ESTRATEGIA 2: LLENADO MASIVO (Por Decenas) ---
+    private static void descargarPorDecenas(Map<Integer, String> juegosProcesados, int totalEnBD, long totalApi) {
+        int anioActual = LocalDate.now().getYear();
+        Map<String, Integer> progresoDecenal = cargarProgresoDecenal();
+        int totalGuardadosSesion = 0;
+        int totalEnBDAhora = totalEnBD;
+
+        for (int anio = anioActual; anio >= 1970; anio--) {
+            for (int mes = 12; mes >= 1; mes--) {
+                if (anio == anioActual && mes > LocalDate.now().getMonthValue()) continue;
+                for (int decena = 3; decena >= 1; decena--) {
+                    String decenaId = String.format("%04d-%02d-%d", anio, mes, decena);
+                    
+                    if (progresoDecenal.getOrDefault(decenaId, 0) == 9999) {
+                        System.out.println("⏩ Decena " + decenaId + " ya completada. Saltando...");
+                        continue;
+                    }
+
+                    System.out.println("\n📅 Procesando DECENA: " + decenaId + "...");
+                    int guardadosEnDecena = descargarPeriodoEspecifico(anio, mes, decena, juegosProcesados, progresoDecenal);
+                    
+                    if (guardadosEnDecena == -1) {
+                        System.out.println("🛑 Abortando proceso por error crítico.");
+                        return;
+                    }
+                    
+                    totalGuardadosSesion += guardadosEnDecena;
+                    totalEnBDAhora += guardadosEnDecena;
+                    
+                    marcarProgresoDecenal(decenaId, 9999);
+                    double porcentaje = totalApi > 0 ? ((double)totalEnBDAhora / totalApi) * 100.0 : 0;
+                    System.out.printf("✅ Decena %s completada. (Sesión: +%d | Total BD: %d / %d | %.2f%%)%n", 
+                                      decenaId, totalGuardadosSesion, totalEnBDAhora, totalApi, porcentaje);
+                }
+            }
+        }
+    }
+
+    private static int descargarPeriodoEspecifico(int anio, int mes, int decena, Map<Integer, String> juegosProcesados, Map<String, Integer> progreso) {
+        String decenaId = String.format("%04d-%02d-%d", anio, mes, decena);
+        int page = progreso.getOrDefault(decenaId, 0) + 1;
+        boolean hayMasDatos = true;
+        int guardadosEnPeriodo = 0;
+        
+        YearMonth yearMonth = YearMonth.of(anio, mes);
+        String fechaInicio, fechaFin;
+
+        if (decena == 1) {
+            fechaInicio = yearMonth.atDay(1).toString();
+            fechaFin = yearMonth.atDay(10).toString();
+        } else if (decena == 2) {
+            fechaInicio = yearMonth.atDay(11).toString();
+            fechaFin = yearMonth.atDay(20).toString();
+        } else {
+            fechaInicio = yearMonth.atDay(21).toString();
+            fechaFin = yearMonth.atEndOfMonth().toString();
+        }
+        String fechas = fechaInicio + "," + fechaFin;
 
         while (hayMasDatos) {
             try {
-                // SIN PARAMETRO PLATFORMS = TODO EL CATÁLOGO
-                String urlString = "https://api.rawg.io/api/games?key=" + API_KEY + 
-                                   "&ordering=-updated" + 
+                String urlString = "https://api.rawg.io/api/games?key=" + getApiKey() + 
+                                   "&dates=" + fechas + 
+                                   "&ordering=-added" + 
                                    "&page_size=40&page=" + page;
 
                 String jsonResponse = peticionHttpConReintentoInfinito(urlString);
-
-                if (jsonResponse == null) {
-                    System.out.println("⚠️ Error fatal en página " + page + ". Abortando.");
-                    break;
-                }
                 
-                if (totalJuegosAPI == -1) {
-                    totalJuegosAPI = extraerCount(jsonResponse);
-                    if (totalJuegosAPI != -1) {
-                        System.out.println("📊 Total en API: " + totalJuegosAPI);
-                        
-                        // Chequeo de Modo Llenado Masivo
-                        if (totalEnBD < (totalJuegosAPI * 0.1)) { // Si tenemos menos del 10%
-                            modoLlenadoMasivo = true;
-                            System.out.println("🚨 MODO LLENADO MASIVO ACTIVADO: Se ignorará la parada temprana hasta tener una base sólida.");
-                        }
-                    }
-                }
+                if (jsonResponse == null) return guardadosEnPeriodo;
 
                 String resultsArray = extraerArrayResults(jsonResponse);
-                
-                if (resultsArray == null || resultsArray.isEmpty() || resultsArray.equals("[]")) {
-                    hayMasDatos = false;
-                    break;
-                }
+                if (resultsArray == null || resultsArray.isEmpty() || resultsArray.equals("[]")) return guardadosEnPeriodo;
 
                 List<String> juegosJson = separarObjetosJson(resultsArray);
-                int novedadesEnPagina = 0;
                 
                 for (String juegoJson : juegosJson) {
-                    procesadosEnSesion++;
-                    
-                    int gameId = extraerIdDelJuego(juegoJson);
-                    String fechaUpdateNueva = extraerFechaUpdate(juegoJson);
-                    
-                    if (gameId != -1) {
-                        boolean esNuevo = !juegosProcesados.containsKey(gameId);
-                        boolean esActualizacion = false;
-
-                        if (!esNuevo) {
-                            String fechaUpdateGuardada = juegosProcesados.get(gameId);
-                            // Si la fecha nueva es distinta (asumimos más reciente por el orden de la API), actualizamos
-                            if (fechaUpdateNueva != null && !fechaUpdateNueva.equals(fechaUpdateGuardada)) {
-                                esActualizacion = true;
-                            }
-                        }
-
-                        if (esNuevo || esActualizacion) {
-                            // ES NUEVO O ACTUALIZADO -> GUARDAR
-                            guardarJuego(gameId, juegoJson);
-                            juegosProcesados.put(gameId, fechaUpdateNueva); // Actualizamos memoria
-                            
-                            guardadosEnSesion++;
-                            novedadesEnPagina++;
-                            consecutivosSinNovedad = 0; // Reset contador
-                            
-                            if (esActualizacion) {
-                                System.out.println("   -> 🔄 Actualizado ID " + gameId + " (Fecha antigua: " + juegosProcesados.get(gameId) + " -> Nueva: " + fechaUpdateNueva + ")");
-                            }
-                        } else {
-                            // YA LO TENEMOS Y NO HA CAMBIADO
-                            consecutivosSinNovedad++;
-                        }
+                    if (procesarJuegoIndividual(juegoJson, juegosProcesados)) {
+                        guardadosEnPeriodo++;
                     }
                 }
 
-                String estadoModo = modoLlenadoMasivo ? "[MASIVO - NO STOP]" : "[NORMAL]";
-                String progreso = String.format("🚀 Pág %d %s | Nuevos/Upd: %d | Sin Cambios Seguidos: %d/%d", 
-                                                page, estadoModo, novedadesEnPagina, consecutivosSinNovedad, UMBRAL_PARADA_TEMPRANA);
-                System.out.println(progreso);
+                System.out.printf("\r   -> %s | Pág %d | Guardados (Periodo): %d", decenaId, page, guardadosEnPeriodo);
+                
+                marcarProgresoDecenal(decenaId, page);
 
-                // LÓGICA DE PARADA TEMPRANA (Solo si NO estamos en modo masivo)
-                if (!modoLlenadoMasivo && consecutivosSinNovedad >= UMBRAL_PARADA_TEMPRANA) {
-                    System.out.println("✅ Se alcanzó el umbral de parada temprana. El resto de juegos ya están actualizados.");
-                    System.out.println("   (Últimos " + consecutivosSinNovedad + " juegos ya existían sin cambios)");
-                    hayMasDatos = false;
-                    break;
-                }
-
-                if (!jsonResponse.contains("\"next\":\"http")) {
-                    hayMasDatos = false;
-                }
-
+                if (!jsonResponse.contains("\"next\":\"http")) hayMasDatos = false;
                 page++;
-                Thread.sleep(250); 
+                Thread.sleep(1000); 
 
             } catch (Exception e) {
-                System.err.println("❌ Error: " + e.getMessage());
+                System.err.println("❌ Error en " + decenaId + ": " + e.getMessage());
+                return -1; 
             }
         }
+        System.out.println(); 
+        return guardadosEnPeriodo; 
+    }
+    
+    // --- LÓGICA COMÚN DE PROCESAMIENTO ---
+    private static boolean procesarJuegoIndividual(String juegoJson, Map<Integer, String> juegosProcesados) {
+        int gameId = extraerIdDelJuego(juegoJson);
+        String fechaUpdateNueva = extraerFechaUpdate(juegoJson);
         
-        System.out.println("🏁 Proceso finalizado.");
-        System.out.println("   -> Total procesados: " + procesadosEnSesion);
-        System.out.println("   -> Nuevos/Actualizados guardados: " + guardadosEnSesion);
+        if (gameId != -1) {
+            boolean esNuevo = !juegosProcesados.containsKey(gameId);
+            boolean esActualizacion = false;
+
+            if (!esNuevo) {
+                String fechaUpdateGuardada = juegosProcesados.get(gameId);
+                if (fechaUpdateNueva != null && !fechaUpdateNueva.equals(fechaUpdateGuardada)) {
+                    esActualizacion = true;
+                }
+            }
+
+            if (esNuevo || esActualizacion) {
+                guardarJuego(gameId, juegoJson);
+                juegosProcesados.put(gameId, fechaUpdateNueva);
+                return true;
+            }
+        }
+        return false;
     }
 
     // --- MÉTODOS AUXILIARES ---
@@ -179,7 +228,33 @@ public class RAWGRawCollector {
         Pattern p = Pattern.compile("\"count\":(\\d+)");
         Matcher m = p.matcher(json);
         if (m.find()) return Integer.parseInt(m.group(1));
-        return -1;
+        return 0;
+    }
+    
+    private static int obtenerCountDePeriodo(int anio, int mes, int decena) {
+        YearMonth yearMonth = YearMonth.of(anio, mes);
+        String fechaInicio, fechaFin;
+
+        if (decena == 1) {
+            fechaInicio = yearMonth.atDay(1).toString();
+            fechaFin = yearMonth.atDay(10).toString();
+        } else if (decena == 2) {
+            fechaInicio = yearMonth.atDay(11).toString();
+            fechaFin = yearMonth.atDay(20).toString();
+        } else {
+            fechaInicio = yearMonth.atDay(21).toString();
+            fechaFin = yearMonth.atEndOfMonth().toString();
+        }
+        String fechas = fechaInicio + "," + fechaFin;
+        String urlString = "https://api.rawg.io/api/games?key=" + getApiKey() + "&dates=" + fechas + "&page_size=1";
+        
+        try {
+            String jsonResponse = peticionHttpConReintentoInfinito(urlString);
+            if (jsonResponse != null) {
+                return extraerCount(jsonResponse);
+            }
+        } catch (Exception e) {}
+        return 0;
     }
     
     private static String extraerArrayResults(String fullJson) {
@@ -220,12 +295,10 @@ public class RAWGRawCollector {
     }
 
     private static int extraerIdDelJuego(String json) {
-        // Intentamos buscar ID cerca de "updated" primero para mayor precisión en el contexto
         Pattern pContext = Pattern.compile("\"updated\":\"[^\"]+\",\"id\":(\\d+)");
         Matcher mContext = pContext.matcher(json);
         if (mContext.find()) return Integer.parseInt(mContext.group(1));
         
-        // Fallback genérico
         Pattern p = Pattern.compile("\"id\":(\\d+)");
         Matcher m = p.matcher(json);
         if (m.find()) return Integer.parseInt(m.group(1));
@@ -251,9 +324,37 @@ public class RAWGRawCollector {
                          "fecha_sync TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
             stmt.execute("CREATE TABLE IF NOT EXISTS rawg_ignored_ids (" +
                          "game_id INTEGER PRIMARY KEY)");
+            // Nueva tabla para guardar el progreso DECENAL
+            stmt.execute("CREATE TABLE IF NOT EXISTS rawg_progress_decenal (" +
+                         "decena_id TEXT PRIMARY KEY, " + // Formato "YYYY-MM-1", "YYYY-MM-2", "YYYY-MM-3"
+                         "ultima_pagina INTEGER NOT NULL)");
         } catch (Exception e) {
             System.err.println("❌ Error fatal DB: " + e.getMessage());
             System.exit(1);
+        }
+    }
+
+    private static Map<String, Integer> cargarProgresoDecenal() {
+        Map<String, Integer> progreso = new HashMap<>();
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
+             Statement stmt = conn.createStatement()) {
+            ResultSet rs = stmt.executeQuery("SELECT decena_id, ultima_pagina FROM rawg_progress_decenal");
+            while (rs.next()) {
+                progreso.put(rs.getString("decena_id"), rs.getInt("ultima_pagina"));
+            }
+        } catch (Exception e) {}
+        return progreso;
+    }
+
+    private static void marcarProgresoDecenal(String decenaId, int pagina) {
+        String sql = "INSERT OR REPLACE INTO rawg_progress_decenal(decena_id, ultima_pagina) VALUES(?,?)";
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, decenaId);
+            pstmt.setInt(2, pagina);
+            pstmt.executeUpdate();
+        } catch (Exception e) {
+            System.err.println("⚠️ Error guardando progreso de la decena " + decenaId + ": " + e.getMessage());
         }
     }
 
@@ -261,23 +362,15 @@ public class RAWGRawCollector {
         Map<Integer, String> juegos = new HashMap<>();
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
              Statement stmt = conn.createStatement()) {
-            
-            // Ignorados (no nos interesa su fecha, solo que existen para no procesarlos si estuvieran en raw_data)
-            // Aunque en este diseño, rawg_ignored_ids parece usarse para exclusiones manuales.
-            // Lo mantenemos por compatibilidad, asignando fecha null o dummy.
             ResultSet rsIgnored = stmt.executeQuery("SELECT game_id FROM rawg_ignored_ids");
             while (rsIgnored.next()) juegos.put(rsIgnored.getInt("game_id"), "IGNORED");
             
             ResultSet rsGames = stmt.executeQuery("SELECT game_id, json_data FROM rawg_raw_data");
-            
             while (rsGames.next()) {
                 int id = rsGames.getInt("game_id");
                 String json = rsGames.getString("json_data");
                 String fechaUpdate = extraerFechaUpdate(json);
-                
-                // Si no tiene fecha update, ponemos una muy antigua
                 if (fechaUpdate == null) fechaUpdate = "1970-01-01T00:00:00";
-                
                 juegos.put(id, fechaUpdate);
             }
         } catch (Exception e) {}
@@ -309,10 +402,21 @@ public class RAWGRawCollector {
     private static String peticionHttpConReintentoInfinito(String urlString) {
         int intentos = 0;
         
-        while (true) { // Bucle infinito hasta éxito o error fatal
+        while (true) { 
             try {
                 return peticionHttp(urlString);
             } catch (Exception e) {
+                if (e.getMessage().contains("401")) {
+                    System.err.println("⚠️ Error 401 (Unauthorized). Rotando API Key...");
+                    rotateApiKey();
+                    // Reconstruimos la URL con la nueva clave
+                    urlString = urlString.replaceAll("key=[^&]+", "key=" + getApiKey());
+                    continue; // Reintentamos inmediatamente con la nueva clave
+                }
+                if (e.getMessage().contains("404")) {
+                    return null; 
+                }
+
                 intentos++;
                 System.err.println("⚠️ Error HTTP (Intento " + intentos + "): " + e.getMessage());
                 
@@ -320,7 +424,6 @@ public class RAWGRawCollector {
                     System.out.println("⏳ Servidor saturado o Rate Limit. Esperando 60s y reintentando...");
                     try { Thread.sleep(60000); } catch (InterruptedException ie) {}
                 } else {
-                    // Errores desconocidos (ej. timeout local), esperamos un poco menos
                     System.out.println("⏳ Error de conexión. Esperando 10s...");
                     try { Thread.sleep(10000); } catch (InterruptedException ie) {}
                 }

@@ -12,7 +12,23 @@ import java.util.List;
 
 public class RAWGDetailCollector {
 
-    private static final String API_KEY = "867e9e7e82c3459593e684c2664243bd";
+    // GESTOR DE CLAVES API
+    private static final String[] API_KEYS = {
+        "7eb38d19ab0c46e2908b58186e8accae",
+        "c792ba46b7c34c2ab558cdfc0b849aaf",
+        "5d43c4de1fb64c10bd71eade75b98996"
+    };
+    private static int currentKeyIndex = 0;
+
+    private static String getApiKey() {
+        return API_KEYS[currentKeyIndex];
+    }
+
+    private static void rotateApiKey() {
+        currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+        System.out.println("🔄 Rotando API Key... Nueva clave: " + getApiKey().substring(0, 8) + "...");
+    }
+
     private static final String DB_FILE = "rawg_raw.sqlite";
     
     // Configuración: Días a esperar antes de volver a comprobar un juego incompleto
@@ -57,7 +73,7 @@ public class RAWGDetailCollector {
                             System.out.println("🔄 [" + procesados + "/" + pendientes.size() + "] ID " + tarea.id + ": Descripción vacía. Reintentando descarga completa...");
                             procesarDescargaCompleta(tarea.id);
                             procesados++;
-                            Thread.sleep(600);
+                            Thread.sleep(1000); // Pausa de seguridad
                             continue; 
                         }
 
@@ -78,14 +94,14 @@ public class RAWGDetailCollector {
                             System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Stores actualizados (" + motivo + "): ID " + tarea.id);
                         }
                         
-                        Thread.sleep(600); 
+                        Thread.sleep(1000); // Pausa de seguridad
                     } 
                     // CASO: Juego totalmente nuevo (sin detalle previo)
                     else {
                         procesarDescargaCompleta(tarea.id);
                         procesados++;
                         System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Nuevo Detalle y Stores descargados: ID " + tarea.id);
-                        Thread.sleep(600); 
+                        Thread.sleep(1000); // Pausa de seguridad
                     }
 
                 } catch (Exception e) {
@@ -108,16 +124,17 @@ public class RAWGDetailCollector {
             guardarNuevoCompleto(gameId, "{\"error\":\"404_not_found\"}", "{\"results\":[]}");
             return;
         }
-
-        if (jsonDetalle != null) {
-            String jsonStores = descargarStoresJuego(gameId);
-            if (jsonStores == null || "404".equals(jsonStores)) {
-                jsonStores = "{\"results\":[]}";
-            }
-            guardarNuevoCompleto(gameId, jsonDetalle, jsonStores);
-        } else {
-            System.err.println("⚠️ No se pudo bajar detalle para ID " + gameId);
+        
+        if (jsonDetalle == null) { // Si es null, es por error 401 y ya se rotó la clave
+             System.err.println("⚠️ No se pudo bajar detalle para ID " + gameId + " (Probablemente por rotación de clave). Se reintentará en la próxima ejecución.");
+             return;
         }
+
+        String jsonStores = descargarStoresJuego(gameId);
+        if (jsonStores == null || "404".equals(jsonStores)) {
+            jsonStores = "{\"results\":[]}";
+        }
+        guardarNuevoCompleto(gameId, jsonDetalle, jsonStores);
     }
 
     private static void setupDatabase() {
@@ -197,12 +214,12 @@ public class RAWGDetailCollector {
     }
 
     private static String descargarDetalleJuego(int gameId) {
-        String urlString = "https://api.rawg.io/api/games/" + gameId + "?key=" + API_KEY;
+        String urlString = "https://api.rawg.io/api/games/" + gameId + "?key=" + getApiKey();
         return peticionHttpConReintento(urlString);
     }
 
     private static String descargarStoresJuego(int gameId) {
-        String urlString = "https://api.rawg.io/api/games/" + gameId + "/stores?key=" + API_KEY;
+        String urlString = "https://api.rawg.io/api/games/" + gameId + "/stores?key=" + getApiKey();
         return peticionHttpConReintento(urlString);
     }
 
@@ -235,19 +252,32 @@ public class RAWGDetailCollector {
 
     private static String peticionHttpConReintento(String urlString) {
         int intentos = 0;
-        while (intentos < 3) {
+        while (true) {
             try {
-                return peticionHttp(urlString);
+                // Reconstruimos la URL en cada intento para usar la clave rotada
+                String urlConClaveActual = urlString.replaceAll("key=[^&]+", "key=" + getApiKey());
+                return peticionHttp(urlConClaveActual);
             } catch (Exception e) {
-                if (e.getMessage().contains("HTTP 404")) {
+                if (e.getMessage().contains("401")) {
+                    System.err.println("⚠️ Error 401 (Unauthorized). Rotando API Key...");
+                    rotateApiKey();
+                    intentos = 0; // Reseteamos intentos al rotar
+                    continue;
+                }
+                if (e.getMessage().contains("404")) {
                     return "404";
                 }
+                
                 intentos++;
-                System.err.println("⚠️ Error HTTP (Intento " + intentos + "): " + e.getMessage() + " para URL: " + urlString);
+                if (intentos > 5) { // Límite de 5 reintentos para errores que no son 401
+                    System.err.println("❌ Demasiados reintentos para " + urlString + ". Abortando esta petición.");
+                    return null;
+                }
+
+                System.err.println("⚠️ Error HTTP (Intento " + intentos + "): " + e.getMessage());
                 try { Thread.sleep(2000); } catch (InterruptedException ie) {}
             }
         }
-        return null;
     }
 
     private static String peticionHttp(String urlString) throws Exception {

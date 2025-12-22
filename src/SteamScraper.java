@@ -80,12 +80,10 @@ public class SteamScraper {
 
     private static String procesarJuego(int appId, String json) {
         try {
-            // Extraemos el tipo (game, dlc, demo, etc.)
             String tipo = extraerValorJsonManual(json, "type");
             
-            // Filtramos lo que no nos interesa, pero ACEPTAMOS "dlc" ahora.
             if (tipo == null) return null;
-            if (!tipo.equals("game") && !tipo.equals("dlc")) return null; // Solo juegos y DLCs
+            if (!tipo.equals("game") && !tipo.equals("dlc")) return null; 
             
             if (json.contains("\"coming_soon\":true")) return null; 
             
@@ -112,7 +110,7 @@ public class SteamScraper {
             sb.append("  {\n");
             sb.append("    \"slug\": \"").append(slug).append("\",\n");
             sb.append("    \"titulo\": \"").append(limpiarTexto(titulo)).append("\",\n");
-            sb.append("    \"tipo\": \"").append(tipo).append("\",\n"); // Nuevo campo tipo
+            sb.append("    \"tipo\": \"").append(tipo).append("\",\n");
             sb.append("    \"descripcion_corta\": \"").append(limpiarTexto(descCorta)).append("\",\n");
             sb.append("    \"fecha_lanzamiento\": \"").append(fecha).append("\",\n");
             sb.append("    \"storage\": \"").append(storage).append("\",\n");

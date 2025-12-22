@@ -104,7 +104,7 @@ public class RAWGScraper {
 
             String titulo = extraerValorJsonManual(jsonBasic, "name");
             String slug = extraerValorJsonManual(jsonBasic, "slug");
-            String tipo = determinarTipoJuego(jsonBasic, titulo); // Determinar si es juego o DLC
+            String tipo = determinarTipoJuego(jsonBasic, titulo); 
             String imgPrincipal = extraerValorJsonManual(jsonBasic, "background_image");
             int metacritic = extraerMetacritic(jsonBasic);
 
@@ -166,7 +166,6 @@ public class RAWGScraper {
     }
     
     private static String determinarTipoJuego(String jsonBasic, String titulo) {
-        // Prioridad 1: Buscar la etiqueta "DLC"
         int tagsIdx = jsonBasic.indexOf("\"tags\":[");
         if (tagsIdx != -1) {
             int tagsEndIdx = jsonBasic.indexOf("]", tagsIdx);
@@ -178,7 +177,6 @@ public class RAWGScraper {
             }
         }
         
-        // Prioridad 2: Buscar palabras clave en el título
         if (titulo != null) {
             String lowerCaseTitle = titulo.toLowerCase();
             if (lowerCaseTitle.contains(" dlc") || 
@@ -188,8 +186,6 @@ public class RAWGScraper {
                 return "dlc";
             }
         }
-        
-        // Por defecto, es un juego
         return "game";
     }
     

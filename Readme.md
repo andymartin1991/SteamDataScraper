@@ -1,129 +1,138 @@
-# 🎮 VoxGamer Data Sync Engine
+# 🎮 Steam & RAWG Data Scraper
 
-Este proyecto es el motor de sincronización de datos para **VoxGamer**. Su función es recolectar, filtrar y estandarizar el catálogo de juegos de múltiples ecosistemas (PC y consolas) para crear una base de datos unificada.
-
-## 🏗️ Arquitectura Multi-Fuente (ELT)
-
-El sistema utiliza una arquitectura ELT (Extract, Load, Transform) modular, donde cada fuente de datos tiene su propio pipeline de recolección y procesado, finalizando en una etapa de unificación global.
-
-### Fuentes de Datos
-1.  **Steam (PC):** A través de la API oficial de Steam.
-2.  **RAWG (Consolas):** A través de la API de RAWG para PlayStation, Xbox y Nintendo.
+Este proyecto es una suite de herramientas en Java diseñada para recolectar, procesar y unificar metadatos de videojuegos desde **Steam** y **RAWG**. Su objetivo es generar una base de datos masiva y limpia (`JSON`) para alimentar aplicaciones offline-first como **VoxGamer**.
 
 ---
 
-## ⚙️ Pipeline de Steam
+## 🚀 Arquitectura del Proyecto
 
-### 1. `SteamRawCollector` (Extracción y Carga)
-Crea una copia local y robusta de los datos de Steam en `steam_raw.sqlite`.
-- **Filtro Inteligente:** Descarga el catálogo completo y distingue entre juegos, DLCs y otro software, guardando los no-juegos en `steam_ignored_ids`.
-- **Actualización de "Coming Soon":** Vuelve a verificar juegos que aún no han sido lanzados para detectar su fecha de salida.
+El sistema funciona mediante una "tubería" (pipeline) de tres etapas: **Recolección (Raw) -> Enriquecimiento (Detail) -> Exportación (Scraper)**.
 
-### 2. `SteamScraper` (Transformación)
-Lee `steam_raw.sqlite` y genera un archivo `steam_games.json.gz` con un formato de datos universal.
-- **Estandarización:** Normaliza fechas, genera slugs, limpia descripciones y extrae datos clave como idiomas, Metacritic y requisitos de almacenamiento.
-- **Formato Final:** Añade el campo `"plataformas": ["PC"]` para la unificación.
+### 1. Recolección (Collectors)
+Descargan los datos crudos de las APIs y los almacenan en bases de datos SQLite locales.
 
----
+*   **`SteamRawCollector`**:
+    *   Descarga el catálogo completo de Steam (~180k apps), incluyendo juegos y DLCs.
+    *   Guarda el JSON crudo en `steam_raw.sqlite`.
+    *   *Estrategia:* Barrido secuencial de IDs.
 
-## 🎮 Pipeline de RAWG (Consolas)
+*   **`RAWGRawCollector`**:
+    *   **El colector más avanzado del proyecto.** Su misión es descargar el catálogo histórico completo de RAWG (~900k juegos) de la forma más robusta posible.
+    *   **Modo Dual Inteligente:**
+        *   **Modo Llenado Masivo:** Si detecta que la base de datos local tiene menos del 95% del catálogo, activa un barrido histórico exhaustivo.
+        *   **Modo Mantenimiento:** Si la base de datos está casi completa, solo descarga las últimas actualizaciones para mantenerla al día.
+    *   **Estrategia de Barrido Decenal:** Para evitar los límites de paginación de la API (~10.000 items), el modo masivo divide cada mes en 3 "decenas" (1-10, 11-20, 21-fin), garantizando la captura del 100% del catálogo.
+    *   **Progreso Persistente y Reanudable:** Guarda el progreso página por página para cada decena en la tabla `rawg_progress_decenal`. Si el script se detiene, reanudará la descarga exactamente donde la dejó, ahorrando miles de peticiones.
+    *   **Rotación de API Keys:** Utiliza una lista de claves API. Si una clave es bloqueada (error 401) o excede su cuota (error 429), rota automáticamente a la siguiente, permitiendo un funcionamiento desatendido durante días.
 
-### 1. `RAWGRawCollector` (Extracción y Carga)
-Descarga el catálogo de juegos para las plataformas de consola seleccionadas (PS5, Xbox Series, Switch) y lo guarda en `rawg_raw.sqlite`.
-- **Optimización:** Ordena los resultados por fecha de actualización y utiliza una estrategia de "parada temprana" para hacer las sincronizaciones diarias extremadamente rápidas.
-- **Robustez:** Reintenta automáticamente las peticiones si la API de RAWG devuelve errores temporales (ej. 502).
+### 2. Enriquecimiento (Detail Collectors)
+Completan la información de los juegos que solo tienen datos básicos.
 
-### 2. `RAWGDetailCollector` (Enriquecimiento Inteligente)
-Este script enriquece los datos de `rawg_raw.sqlite` de forma eficiente, distinguiendo entre juegos nuevos y existentes.
-- **Modo Inteligente:** Identifica qué juegos necesitan ser procesados:
-    - **Juegos Nuevos:** Aquellos que no tienen ninguna entrada en la tabla `rawg_details_data`.
-    - **Juegos a Actualizar:** Aquellos que ya tienen la ficha de detalle pero les falta la información de tiendas (`json_stores` es nulo).
-- **Proceso de Enriquecimiento:**
-    - Para **juegos nuevos**, descarga tanto la ficha de detalle (`/games/{id}`) como los enlaces a tiendas (`/games/{id}/stores`).
-    - Para **juegos a actualizar**, solo descarga la información de las tiendas, ahorrando tiempo y llamadas a la API.
-- **Manejo de Errores:** Si un juego devuelve un error 404 (no encontrado), lo marca internamente para no volver a intentarlo en futuras ejecuciones.
+*   **`RAWGDetailCollector`**:
+    *   Escanea `rawg_raw.sqlite` buscando juegos sin descripción o tiendas.
+    *   Descarga los detalles completos (`/games/{id}`) y tiendas (`/stores`).
+    *   También implementa **rotación de API Keys** para máxima resiliencia.
+    *   *Inteligencia:* Si un juego sigue incompleto, aplica un "cooldown" de 3 días antes de volver a intentarlo.
 
-### 3. `RAWGScraper` (Transformación)
-Lee `rawg_raw.sqlite` (ambas tablas, `rawg_raw_data` y `rawg_details_data`) y genera `rawg_games.json.gz`.
-- **Fusión de Datos:** Combina la información básica de la lista con los datos enriquecidos de detalle y tiendas.
-- **Lógica de Tiendas Mejorada:**
-    - **Prioriza URL Directa:** Si la columna `json_stores` contiene datos, extrae de ahí la URL final de la tienda.
-    - **Fallback a Búsqueda:** Si `json_stores` está vacío (para datos antiguos o si la API falló), genera una URL de búsqueda genérica como antes.
-- **Inferencia de Datos:**
-    - Deduce si un juego es `"is_free": true` buscando el tag "Free to Play".
-    - Infiere la plataforma "PC" si el juego se vende en tiendas como Steam, Epic o GOG.
+### 3. Exportación y Fusión (Scrapers & Union)
+Procesan los datos crudos, los limpian y generan el archivo final.
 
----
+*   **`SteamScraper`**:
+    *   Lee `steam_raw.sqlite`.
+    *   Limpia textos, extrae imágenes, requisitos, idiomas y el tipo de producto (juego/dlc).
+    *   Genera `steam_games.json.gz`.
 
-## 🌍 Unificación Global
+*   **`RAWGScraper`**:
+    *   Lee `rawg_raw.sqlite` (fusionando datos básicos + detalles).
+    *   **Filtro de Calidad:** Solo exporta juegos que tengan descripción corta válida.
+    *   Detecta si es **Juego** o **DLC**.
+    *   Genera `rawg_games.json.gz`.
 
-### `GlobalUnion` (Fusión Final)
-Esta es la etapa final del proceso. Toma los archivos `steam_games.json.gz` y `rawg_games.json.gz` y los fusiona en un único archivo maestro: `global_games.json.gz`.
-
-**Lógica de Fusión:**
-1.  **Carga en Memoria:** Carga todos los juegos de Steam en un mapa para acceso rápido.
-2.  **Iteración y Cruce:** Recorre los juegos de RAWG uno a uno.
-    *   **Si el juego existe en Steam (Coincidencia por Slug):**
-        *   Toma los datos de Steam como base (más fiables para PC).
-        *   **Enriquece:** Añade plataformas, géneros y galerías de RAWG que no estén en Steam.
-        *   **Tiendas:** Añade enlaces a tiendas de consola (PS Store, eShop) provenientes de RAWG.
-        *   **Metacritic:** Se queda con la puntuación más alta de las dos fuentes.
-    *   **Si el juego NO existe en Steam:**
-        *   Añade el juego de RAWG tal cual (exclusivo de consola).
-3.  **Completado:** Finalmente, añade todos los juegos de Steam que no fueron cruzados (exclusivos de PC).
+*   **`GlobalUnion`**:
+    *   **El paso final.**
+    *   Lee `steam_games.json.gz` y `rawg_games.json.gz`.
+    *   Fusiona ambos catálogos eliminando duplicados (priorizando Steam para datos de PC).
+    *   Genera el archivo maestro: **`global_games.json.gz`**.
 
 ---
 
-## 🚀 Cómo Ejecutar
+## 🛠️ Configuración
 
 ### Requisitos
-*   Java 17 (Amazon Corretto recomendado).
-*   Gradle.
+*   Java JDK 17+
+*   Maven o Gradle (incluido en el wrapper)
+*   Claves de API válidas para RAWG.
 
-### Ejecución
-Puedes ejecutar cada fase de forma independiente usando las tareas de Gradle. El orden recomendado es:
-
-1.  **Recolectar Datos:**
-    *   `runCollector` (para Steam)
-    *   `runRawgCollector` (para consolas)
-    *   `runRawgDetailCollector` (para enriquecer datos de consolas)
-
-2.  **Procesar y Generar JSONs Parciales:**
-    *   `runScraper` (para Steam)
-    *   `runRawgScraper` (para consolas)
-
-3.  **Unificación Final:**
-    *   `runGlobalUnion` (Genera `global_games.json.gz`)
-
-O desde la terminal:
-```bash
-# 1. Recolección
-./gradlew runCollector
-./gradlew runRawgCollector
-./gradlew runRawgDetailCollector
-
-# 2. Procesado
-./gradlew runScraper
-./gradlew runRawgScraper
-
-# 3. Unificación
-./gradlew runGlobalUnion
-```
-
-## 📂 Estructura de Datos (SQLite y JSON)
-
-*   **`steam_raw.sqlite`**: Datos crudos de Steam.
-*   **`rawg_raw.sqlite`**: Datos crudos de RAWG (lista + detalles + tiendas).
-*   **`steam_games.json.gz`**: Catálogo procesado de Steam.
-*   **`rawg_games.json.gz`**: Catálogo procesado de RAWG.
-*   **`global_games.json.gz`**: **Archivo Maestro Final** con todos los juegos unificados.
-
-## 🛠️ Tecnologías
-*   **Java 17**
-*   **SQLite**
-*   **Jackson (JSON Processing)**
-*   **GZIP**
-*   **Gradle**
+### Claves de API
+Las claves están hardcodeadas en una lista dentro de las clases. Si necesitas cambiarlas o añadirlas, modifica el array `API_KEYS` en:
+*   `src/RAWGRawCollector.java`
+*   `src/RAWGDetailCollector.java`
 
 ---
-*VoxGamer Data Engineering Team*
+
+## ▶️ Cómo Ejecutar (Flujo Completo)
+
+Para una actualización completa desde cero o mantenimiento diario:
+
+1.  **Recolectar Steam:**
+    ```bash
+    ./gradlew SteamRawCollector.main()
+    ```
+2.  **Recolectar RAWG (Lista Completa):**
+    ```bash
+    ./gradlew RAWGRawCollector.main()
+    ```
+    *(Nota: La primera vez tardará días en bajar los ~900k juegos. Es reanudable, puedes pararlo y seguir en cualquier momento).*
+
+3.  **Enriquecer RAWG (Detalles):**
+    ```bash
+    ./gradlew RAWGDetailCollector.main()
+    ```
+    *(Nota: Se ejecuta en segundo plano para ir completando descripciones. Tardará semanas en completar todo el catálogo).*
+
+4.  **Generar JSONs Intermedios:**
+    ```bash
+    ./gradlew SteamScraper.main()
+    ./gradlew RAWGScraper.main()
+    ```
+
+5.  **Fusión Final:**
+    ```bash
+    ./gradlew GlobalUnion.main()
+    ```
+
+El resultado será un archivo **`global_games.json.gz`** listo para ser consumido por la app VoxGamer.
+
+---
+
+## 📂 Estructura de Datos (JSON Final)
+
+Cada juego en el JSON final tiene este formato unificado:
+
+```json
+{
+  "slug": "half-life-2",
+  "titulo": "Half-Life 2",
+  "tipo": "game",  // o "dlc"
+  "descripcion_corta": "The Seven Hour War is lost...",
+  "fecha_lanzamiento": "2004-11-16",
+  "storage": "6500 MB",
+  "generos": ["Shooter", "Action"],
+  "plataformas": ["PC", "Xbox 360", "PlayStation 3"],
+  "img_principal": "https://...",
+  "galeria": ["url1", "url2"],
+  "idiomas": {
+    "voces": ["English"],
+    "textos": ["English", "Spanish"]
+  },
+  "metacritic": 96,
+  "tiendas": [
+    {
+      "tienda": "Steam",
+      "id_externo": "220",
+      "url": "https://store.steampowered.com/app/220",
+      "is_free": false
+    }
+  ]
+}
+```
