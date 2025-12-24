@@ -8,7 +8,11 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class RAWGDetailCollector {
 
@@ -16,7 +20,10 @@ public class RAWGDetailCollector {
     private static final String[] API_KEYS = {
         "7eb38d19ab0c46e2908b58186e8accae",
         "c792ba46b7c34c2ab558cdfc0b849aaf",
-        "5d43c4de1fb64c10bd71eade75b98996"
+        "5d43c4de1fb64c10bd71eade75b98996",
+        "d178a23d354549e69bdb2267329a7f13",
+        "fb26a83a918348e8bb7e231b16dd8a29",
+            "d19734a6cf8e4790b728aac15d47eb41"
     };
     private static int currentKeyIndex = 0;
 
@@ -30,24 +37,33 @@ public class RAWGDetailCollector {
     }
 
     private static final String DB_FILE = "rawg_raw.sqlite";
-    
-    // Configuración: Días a esperar antes de volver a comprobar un juego incompleto
     private static final int DIAS_COOLDOWN_VACIOS = 3;
+    
+    // Regex pre-compilada para rendimiento
+    private static final Pattern PATTERN_PLATFORMS = Pattern.compile("\"parent_platforms\":\\s*\\[(.*?)\\]");
 
     private static class GameTask {
         int id;
         boolean tieneDetalle;
         boolean esError404;
-        boolean esReintentoVacio; // Stores vacíos
-        boolean descripcionVacia; // Descripción vacía
+        boolean esReintentoVacio;
+        boolean descripcionVacia;
+        boolean esSoloPC;
 
-        public GameTask(int id, boolean tieneDetalle, boolean esError404, boolean esReintentoVacio, boolean descripcionVacia) {
+        public GameTask(int id, boolean tieneDetalle, boolean esError404, boolean esReintentoVacio, boolean descripcionVacia, boolean esSoloPC) {
             this.id = id;
             this.tieneDetalle = tieneDetalle;
             this.esError404 = esError404;
             this.esReintentoVacio = esReintentoVacio;
             this.descripcionVacia = descripcionVacia;
+            this.esSoloPC = esSoloPC;
         }
+    }
+    
+    private static class Stats {
+        int total = 0;
+        int pcOnly = 0;
+        int consoleMulti = 0;
     }
 
     public static void main(String[] args) {
@@ -57,51 +73,72 @@ public class RAWGDetailCollector {
             Class.forName("org.sqlite.JDBC");
             setupDatabase();
 
+            // 1. Analizar lo que YA tenemos guardado
+            System.out.println("📊 Analizando base de datos existente...");
+            Stats statsProcesados = analizarJuegosProcesados();
+            
+            // 2. Obtener y clasificar lo pendiente
+            System.out.println("📋 Obteniendo lista de pendientes...");
             List<GameTask> pendientes = obtenerTareasPendientes();
-            System.out.println("📋 Juegos pendientes de procesar: " + pendientes.size());
+            
+            // Calcular estadísticas de pendientes
+            long pendientesSoloPC = pendientes.stream().filter(t -> t.esSoloPC).count();
+            long pendientesPrioridad = pendientes.size() - pendientesSoloPC;
+
+            // 3. MOSTRAR DASHBOARD
+            System.out.println("\n=================================================");
+            System.out.println("       ESTADO DEL SCRAPING (RAWG)       ");
+            System.out.println("=================================================");
+            System.out.println(String.format("| %-15s | %-10s | %-10s | %-10s |", "CATEGORIA", "TOTAL", "CONSOLA/MULTI", "SOLO PC"));
+            System.out.println("|-----------------|------------|---------------|------------|");
+            System.out.println(String.format("| ✅ PROCESADOS   | %-10d | %-13d | %-10d |", 
+                statsProcesados.total, statsProcesados.consoleMulti, statsProcesados.pcOnly));
+            System.out.println(String.format("| ⏳ PENDIENTES   | %-10d | %-13d | %-10d |", 
+                pendientes.size(), pendientesPrioridad, pendientesSoloPC));
+            System.out.println("=================================================\n");
+
+            // ORDENAR: Prioridad a Consolas/Multi
+            Collections.sort(pendientes, new Comparator<GameTask>() {
+                @Override
+                public int compare(GameTask o1, GameTask o2) {
+                    if (o1.esSoloPC && !o2.esSoloPC) return 1;
+                    if (!o1.esSoloPC && o2.esSoloPC) return -1;
+                    return 0;
+                }
+            });
 
             int procesados = 0;
             for (GameTask tarea : pendientes) {
                 try {
                     if (tarea.esError404) continue;
 
-                    // CASO: Ya tenemos detalle previo
                     if (tarea.tieneDetalle) {
-                        
-                        // SUB-CASO: Descripción vacía -> FORZAR REDESCARGA COMPLETA
                         if (tarea.descripcionVacia) {
-                            System.out.println("🔄 [" + procesados + "/" + pendientes.size() + "] ID " + tarea.id + ": Descripción vacía. Reintentando descarga completa...");
+                            System.out.println("🔄 [" + procesados + "/" + pendientes.size() + "] ID " + tarea.id + ": Descripción vacía. Reintentando...");
                             procesarDescargaCompleta(tarea.id);
                             procesados++;
-                            Thread.sleep(1000); // Pausa de seguridad
+                            Thread.sleep(1000);
                             continue; 
                         }
 
-                        // SUB-CASO: Solo faltan Stores (o reintento de stores vacíos)
-                        String motivo = tarea.esReintentoVacio ? "Reintento Stores (Vacío hace >" + DIAS_COOLDOWN_VACIOS + "d)" : "Nuevo Stores";
+                        String motivo = tarea.esReintentoVacio ? "Reintento Stores" : "Nuevo Stores";
                         String jsonStores = descargarStoresJuego(tarea.id);
                         
-                        if (jsonStores == null || "404".equals(jsonStores)) {
-                            jsonStores = "{\"results\":[]}";
-                        }
+                        if (jsonStores == null || "404".equals(jsonStores)) jsonStores = "{\"results\":[]}";
 
                         actualizarStores(tarea.id, jsonStores);
                         procesados++;
                         
-                        if (jsonStores.contains("\"results\":[]") || jsonStores.equals("[]")) {
-                            System.out.println("⚠️ [" + procesados + "/" + pendientes.size() + "] ID " + tarea.id + ": Stores siguen vacíos. Se reintentará en " + DIAS_COOLDOWN_VACIOS + " días.");
-                        } else {
-                            System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Stores actualizados (" + motivo + "): ID " + tarea.id);
-                        }
+                        String tipo = tarea.esSoloPC ? "PC" : "CONSOLA";
+                        System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Stores (" + tipo + "): ID " + tarea.id);
                         
-                        Thread.sleep(1000); // Pausa de seguridad
-                    } 
-                    // CASO: Juego totalmente nuevo (sin detalle previo)
-                    else {
+                        Thread.sleep(1000);
+                    } else {
                         procesarDescargaCompleta(tarea.id);
                         procesados++;
-                        System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Nuevo Detalle y Stores descargados: ID " + tarea.id);
-                        Thread.sleep(1000); // Pausa de seguridad
+                        String tipo = tarea.esSoloPC ? "PC" : "CONSOLA";
+                        System.out.println("✅ [" + procesados + "/" + pendientes.size() + "] Full (" + tipo + "): ID " + tarea.id);
+                        Thread.sleep(1000);
                     }
 
                 } catch (Exception e) {
@@ -116,25 +153,99 @@ public class RAWGDetailCollector {
         }
     }
 
-    private static void procesarDescargaCompleta(int gameId) {
-        String jsonDetalle = descargarDetalleJuego(gameId);
+    // --- LÓGICA DE CLASIFICACIÓN ---
 
-        if ("404".equals(jsonDetalle)) {
-            System.err.println("⚠️ ID " + gameId + " no encontrado (404). Marcando error.");
-            guardarNuevoCompleto(gameId, "{\"error\":\"404_not_found\"}", "{\"results\":[]}");
-            return;
-        }
+    private static boolean esSoloPC(String jsonBasic) {
+        if (jsonBasic == null) return false; // Ante la duda, priorizar (no es solo PC)
         
-        if (jsonDetalle == null) { // Si es null, es por error 401 y ya se rotó la clave
-             System.err.println("⚠️ No se pudo bajar detalle para ID " + gameId + " (Probablemente por rotación de clave). Se reintentará en la próxima ejecución.");
-             return;
+        Matcher m = PATTERN_PLATFORMS.matcher(jsonBasic);
+        if (m.find()) {
+            String platformsContent = m.group(1);
+            
+            int count = 0;
+            int idx = 0;
+            while ((idx = platformsContent.indexOf("\"slug\":", idx)) != -1) {
+                count++;
+                idx += 7;
+            }
+            
+            boolean tienePC = platformsContent.contains("\"slug\":\"pc\"");
+            
+            // Es Solo PC si: Tiene 1 plataforma Y esa es PC
+            return (count == 1 && tienePC);
         }
+        return false; // Si no tiene plataformas definidas, lo tratamos como prioritario por si acaso
+    }
 
-        String jsonStores = descargarStoresJuego(gameId);
-        if (jsonStores == null || "404".equals(jsonStores)) {
-            jsonStores = "{\"results\":[]}";
+    // --- BASE DE DATOS Y ANÁLISIS ---
+
+    private static Stats analizarJuegosProcesados() {
+        Stats stats = new Stats();
+        String sql = "SELECT r.json_data FROM rawg_details_data d " +
+                     "JOIN rawg_raw_data r ON d.game_id = r.game_id " +
+                     "WHERE d.json_full IS NOT NULL";
+                     
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            
+            while (rs.next()) {
+                stats.total++;
+                if (esSoloPC(rs.getString("json_data"))) {
+                    stats.pcOnly++;
+                } else {
+                    stats.consoleMulti++;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("⚠️ Error analizando estadísticas: " + e.getMessage());
         }
-        guardarNuevoCompleto(gameId, jsonDetalle, jsonStores);
+        return stats;
+    }
+
+    private static List<GameTask> obtenerTareasPendientes() {
+        List<GameTask> tareas = new ArrayList<>();
+        
+        String sql = "SELECT r.game_id, r.json_data, " +
+                     "d.json_full, d.json_stores, d.fecha_sync, " +
+                     "CASE WHEN d.json_full IS NOT NULL THEN 1 ELSE 0 END as tiene_detalle, " +
+                     "CASE WHEN d.json_full LIKE '%\"error\":\"404_not_found\"%' THEN 1 ELSE 0 END as es_error " +
+                     "FROM rawg_raw_data r " +
+                     "LEFT JOIN rawg_details_data d ON r.game_id = d.game_id " +
+                     "WHERE " +
+                     "d.game_id IS NULL " +
+                     "OR d.json_stores IS NULL " +
+                     "OR ( (d.json_stores LIKE '%\"results\":[]%' OR d.json_stores = '[]') " +
+                     "     AND d.fecha_sync < datetime('now', '-" + DIAS_COOLDOWN_VACIOS + " days') )" +
+                     "OR ( (d.json_full LIKE '%\"description\":\"\"%' OR d.json_full LIKE '%\"description_raw\":\"\"%') " +
+                     "     AND d.fecha_sync < datetime('now', '-" + DIAS_COOLDOWN_VACIOS + " days') )";
+        
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            
+            while (rs.next()) {
+                if (rs.getBoolean("es_error")) continue;
+
+                String jsonStores = rs.getString("json_stores");
+                String jsonFull = rs.getString("json_full");
+                
+                boolean esVacioStores = (jsonStores != null && (jsonStores.contains("\"results\":[]") || jsonStores.equals("[]")));
+                boolean esVacioDesc = (jsonFull != null && (jsonFull.contains("\"description\":\"\"") || jsonFull.contains("\"description_raw\":\"\"")));
+
+                tareas.add(new GameTask(
+                    rs.getInt("game_id"),
+                    rs.getBoolean("tiene_detalle"),
+                    rs.getBoolean("es_error"),
+                    esVacioStores,
+                    esVacioDesc,
+                    esSoloPC(rs.getString("json_data"))
+                ));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return tareas;
     }
 
     private static void setupDatabase() {
@@ -158,59 +269,33 @@ public class RAWGDetailCollector {
 
             if (!storesColumnExists) {
                 stmt.execute("ALTER TABLE rawg_details_data ADD COLUMN json_stores TEXT;");
-                System.out.println("ℹ️ Columna 'json_stores' añadida.");
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private static List<GameTask> obtenerTareasPendientes() {
-        List<GameTask> tareas = new ArrayList<>();
-        
-        String sql = "SELECT r.game_id, " +
-                     "d.json_full, d.json_stores, d.fecha_sync, " +
-                     "CASE WHEN d.json_full IS NOT NULL THEN 1 ELSE 0 END as tiene_detalle, " +
-                     "CASE WHEN d.json_full LIKE '%\"error\":\"404_not_found\"%' THEN 1 ELSE 0 END as es_error " +
-                     "FROM rawg_raw_data r " +
-                     "LEFT JOIN rawg_details_data d ON r.game_id = d.game_id " +
-                     "WHERE " +
-                     // Caso 1: Nuevo total
-                     "d.game_id IS NULL " +
-                     // Caso 2: Falta store
-                     "OR d.json_stores IS NULL " +
-                     // Caso 3: Store vacío Y fecha antigua (Cooldown)
-                     "OR ( (d.json_stores LIKE '%\"results\":[]%' OR d.json_stores = '[]') " +
-                     "     AND d.fecha_sync < datetime('now', '-" + DIAS_COOLDOWN_VACIOS + " days') )" +
-                     // Caso 4: Descripción vacía Y fecha antigua (Cooldown)
-                     "OR ( (d.json_full LIKE '%\"description\":\"\"%' OR d.json_full LIKE '%\"description_raw\":\"\"%') " +
-                     "     AND d.fecha_sync < datetime('now', '-" + DIAS_COOLDOWN_VACIOS + " days') )";
-        
-        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            while (rs.next()) {
-                if (rs.getBoolean("es_error")) continue;
+    // --- DESCARGAS Y GUARDADO ---
 
-                String jsonStores = rs.getString("json_stores");
-                String jsonFull = rs.getString("json_full");
-                
-                boolean esVacioStores = (jsonStores != null && (jsonStores.contains("\"results\":[]") || jsonStores.equals("[]")));
-                boolean esVacioDesc = (jsonFull != null && (jsonFull.contains("\"description\":\"\"") || jsonFull.contains("\"description_raw\":\"\"")));
+    private static void procesarDescargaCompleta(int gameId) {
+        String jsonDetalle = descargarDetalleJuego(gameId);
 
-                tareas.add(new GameTask(
-                    rs.getInt("game_id"),
-                    rs.getBoolean("tiene_detalle"),
-                    rs.getBoolean("es_error"),
-                    esVacioStores,
-                    esVacioDesc
-                ));
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+        if ("404".equals(jsonDetalle)) {
+            System.err.println("⚠️ ID " + gameId + " no encontrado (404). Marcando error.");
+            guardarNuevoCompleto(gameId, "{\"error\":\"404_not_found\"}", "{\"results\":[]}");
+            return;
         }
-        return tareas;
+        
+        if (jsonDetalle == null) {
+             System.err.println("⚠️ Skip ID " + gameId + " (Error API).");
+             return;
+        }
+
+        String jsonStores = descargarStoresJuego(gameId);
+        if (jsonStores == null || "404".equals(jsonStores)) {
+            jsonStores = "{\"results\":[]}";
+        }
+        guardarNuevoCompleto(gameId, jsonDetalle, jsonStores);
     }
 
     private static String descargarDetalleJuego(int gameId) {
@@ -224,7 +309,6 @@ public class RAWGDetailCollector {
     }
 
     private static void guardarNuevoCompleto(int gameId, String jsonDetail, String jsonStores) {
-        // Al insertar, fecha_sync se pone sola a CURRENT_TIMESTAMP
         String sql = "INSERT OR REPLACE INTO rawg_details_data(game_id, json_full, json_stores, fecha_sync) VALUES(?,?,?, CURRENT_TIMESTAMP)";
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -238,7 +322,6 @@ public class RAWGDetailCollector {
     }
 
     private static void actualizarStores(int gameId, String jsonStores) {
-        // IMPORTANTE: Actualizamos fecha_sync para resetear el cooldown
         String sql = "UPDATE rawg_details_data SET json_stores = ?, fecha_sync = CURRENT_TIMESTAMP WHERE game_id = ?";
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -254,27 +337,22 @@ public class RAWGDetailCollector {
         int intentos = 0;
         while (true) {
             try {
-                // Reconstruimos la URL en cada intento para usar la clave rotada
                 String urlConClaveActual = urlString.replaceAll("key=[^&]+", "key=" + getApiKey());
                 return peticionHttp(urlConClaveActual);
             } catch (Exception e) {
                 if (e.getMessage().contains("401")) {
                     System.err.println("⚠️ Error 401 (Unauthorized). Rotando API Key...");
                     rotateApiKey();
-                    intentos = 0; // Reseteamos intentos al rotar
+                    intentos = 0;
                     continue;
                 }
-                if (e.getMessage().contains("404")) {
-                    return "404";
-                }
+                if (e.getMessage().contains("404")) return "404";
                 
                 intentos++;
-                if (intentos > 5) { // Límite de 5 reintentos para errores que no son 401
-                    System.err.println("❌ Demasiados reintentos para " + urlString + ". Abortando esta petición.");
+                if (intentos > 5) {
+                    System.err.println("❌ Abortando " + urlString);
                     return null;
                 }
-
-                System.err.println("⚠️ Error HTTP (Intento " + intentos + "): " + e.getMessage());
                 try { Thread.sleep(2000); } catch (InterruptedException ie) {}
             }
         }

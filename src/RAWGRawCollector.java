@@ -23,7 +23,10 @@ public class RAWGRawCollector {
     private static final String[] API_KEYS = {
         "7eb38d19ab0c46e2908b58186e8accae",
         "c792ba46b7c34c2ab558cdfc0b849aaf",
-        "5d43c4de1fb64c10bd71eade75b98996"
+        "5d43c4de1fb64c10bd71eade75b98996",
+        "d178a23d354549e69bdb2267329a7f13",
+        "fb26a83a918348e8bb7e231b16dd8a29",
+            "d19734a6cf8e4790b728aac15d47eb41"
     };
     private static int currentKeyIndex = 0;
 

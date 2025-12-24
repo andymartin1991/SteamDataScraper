@@ -35,10 +35,12 @@ public class SteamRawCollector {
 
             setupDatabase();
 
-            // CAMBIO IMPORTANTE: Ahora solo cargamos los juegos VÁLIDOS ya procesados.
-            // Ignoramos la tabla 'steam_ignored_ids' para re-evaluar todo lo que antes descartamos (como los DLCs).
+            // Cargamos IDs que NO queremos volver a procesar:
+            // 1. Juegos ya guardados y lanzados (coming_soon: false).
+            // 2. IDs ignorados (basura, demos, etc).
+            // Los "coming soon" NO se cargan aquí, para que pasen a pendientes y se actualicen.
             Set<Integer> idsYaGuardados = cargarIdsYaGuardados();
-            System.out.println("📚 Base de datos (Juegos/DLCs ya guardados): " + idsYaGuardados.size() + " ítems.");
+            System.out.println("📚 Base de datos (Procesados + Ignorados): " + idsYaGuardados.size() + " ítems.");
             
             System.out.println("☁️ Descargando catálogo fresco de Steam (Juegos + DLCs)...");
             List<Integer> catalogoSteam = obtenerCatalogoSteam();
@@ -46,12 +48,13 @@ public class SteamRawCollector {
 
             List<Integer> pendientes = new ArrayList<>();
             for (Integer id : catalogoSteam) {
-                // Si no está en la tabla de datos válidos, lo procesamos (sea nuevo o antes ignorado)
+                // Si no está en la lista de "ya finalizados", lo procesamos.
+                // Esto incluye: NUEVOS y juegos que estaban en COMING SOON.
                 if (!idsYaGuardados.contains(id)) {
                     pendientes.add(id);
                 }
             }
-            System.out.println("⚡ Pendientes de análisis (Nuevos + Re-evaluación de Ignorados): " + pendientes.size() + " ítems.");
+            System.out.println("⚡ Pendientes de análisis (Nuevos + Coming Soon): " + pendientes.size() + " ítems.");
 
             if (pendientes.isEmpty()) {
                 System.out.println("✅ Todo sincronizado. No hay trabajo pendiente.");
@@ -93,6 +96,9 @@ public class SteamRawCollector {
                     }
                     
                     procesados++;
+                    
+                    // Respetar límites de Steam (evita el 429)
+                    try { Thread.sleep(1500); } catch (InterruptedException e) {}
 
                 } catch (Throwable t) {
                     System.err.println("❌ Error crítico en AppID " + appId + ": " + t.toString());
@@ -137,7 +143,8 @@ public class SteamRawCollector {
         try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
              Statement stmt = conn.createStatement()) {
              
-            // SOLO cargamos los que ya son válidos. Ignoramos la tabla de descartes.
+            // 1. Cargar juegos VÁLIDOS que YA salieron (no son coming soon).
+            // Si es coming soon, NO lo añadimos a 'ids', para que 'pendientes' lo incluya y se actualice.
             ResultSet rsGames = stmt.executeQuery("SELECT app_id, json_data FROM steam_raw_data");
             while (rsGames.next()) {
                 String json = rsGames.getString("json_data");
@@ -145,6 +152,14 @@ public class SteamRawCollector {
                     ids.add(rsGames.getInt("app_id"));
                 }
             }
+            rsGames.close();
+
+            // 2. Cargar los IGNORADOS (demos, videos, etc.) para NO volver a evaluarlos.
+            ResultSet rsIgnored = stmt.executeQuery("SELECT app_id FROM steam_ignored_ids");
+            while (rsIgnored.next()) {
+                ids.add(rsIgnored.getInt("app_id"));
+            }
+            rsIgnored.close();
             
         } catch (Exception e) {
             System.err.println("⚠️ No se pudo cargar la lista de IDs procesados: " + e.getMessage());
