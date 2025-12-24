@@ -106,7 +106,7 @@ public class RAWGScraper {
             String slug = extraerValorJsonManual(jsonBasic, "slug");
             
             // --- DETERMINAR TIPO (GAME vs DLC) ---
-            // Lógica robusta basada en parents_count + palabras clave
+            // Lógica basada en parents_count y playtime
             String tipo = determinarTipoJuego(jsonBasic, jsonDetail);
 
             String imgPrincipal = extraerValorJsonManual(jsonBasic, "background_image");
@@ -171,9 +171,6 @@ public class RAWGScraper {
     
     private static String determinarTipoJuego(String jsonBasic, String jsonDetail) {
         // 1. Por defecto es GAME
-        String tipo = "game";
-        
-        // 2. Si no hay detalle, no podemos saber si tiene padres, así que asumimos game
         if (jsonDetail == null || jsonDetail.isEmpty()) return "game";
 
         int parentsCount = extraerEnteroJsonManual(jsonDetail, "parents_count");
@@ -181,49 +178,34 @@ public class RAWGScraper {
         // Si NO tiene padres, es un juego base seguro
         if (parentsCount == 0) return "game";
 
-        // 3. Si TIENE padres, investigamos si es DLC o Standalone/Edición
-        String name = extraerValorJsonManual(jsonBasic, "name");
-        String slug = extraerValorJsonManual(jsonBasic, "slug");
-        String description = extraerValorJsonManual(jsonDetail, "description_raw");
-        if (description == null) description = extraerValorJsonManual(jsonDetail, "description");
+        // 2. Si TIENE padres, asumimos DLC por defecto, salvo excepciones
         
-        if (name == null) name = "";
-        if (slug == null) slug = "";
-        if (description == null) description = "";
+        // Excepción A: Ediciones Especiales (GOTY, Definitive, etc.) -> Son JUEGOS
+        String name = extraerValorJsonManual(jsonBasic, "name");
+        if (name != null) {
+            String lowerName = name.toLowerCase();
+            if (lowerName.contains("edition") || 
+                lowerName.contains("remastered") || 
+                lowerName.contains("definitive") || 
+                lowerName.contains("collection") || 
+                lowerName.contains("anthology") || 
+                lowerName.contains("trilogy") || 
+                lowerName.contains("director's cut") ||
+                lowerName.contains("goty")) {
+                return "game";
+            }
+        }
 
-        String titleSlug = (name + " " + slug).toLowerCase();
-        String fullText = (name + " " + slug + " " + description).toLowerCase();
-
-        // A) Señales de EDICIÓN / BUNDLE (Prevalece sobre DLC)
-        // Si es una edición GOTY, Deluxe, etc., es un JUEGO (que incluye DLCs), no un DLC en sí.
-        if (titleSlug.contains("edition") || 
-            titleSlug.contains("remastered") || 
-            titleSlug.contains("definitive") || 
-            titleSlug.contains("collection") || 
-            titleSlug.contains("anthology") || 
-            titleSlug.contains("trilogy") || 
-            titleSlug.contains("director's cut") ||
-            titleSlug.contains("goty")) {
+        // Excepción B: Playtime considerable -> Es un Standalone (JUEGO)
+        // Los DLCs suelen tener playtime 0 o muy bajo.
+        // Miles Morales tiene 9 horas. Un DLC típico tiene 0 en metadatos RAWG.
+        int playtime = extraerEnteroJsonManual(jsonBasic, "playtime");
+        if (playtime >= 2) {
             return "game";
         }
 
-        // B) Señales de DLC (En Título, Slug o Descripción)
-        if (fullText.contains("dlc") || 
-            fullText.contains("season pass") || 
-            fullText.contains("expansion") || 
-            fullText.contains("add-on") || 
-            fullText.contains("addon") || 
-            fullText.contains("soundtrack") || 
-            fullText.contains("requires the base game") || 
-            fullText.contains("downloadable content") ||
-            fullText.contains("contenido descargable") ||
-            fullText.contains("pase de temporada") ||
-            fullText.contains("complemento")) {
-            return "dlc";
-        }
-
-        // C) Fallback: Tiene padre pero no dice explícitamente que sea DLC -> Standalone (ej: Miles Morales)
-        return "game";
+        // Si tiene padre, no es edición especial y tiene poco playtime -> Es DLC
+        return "dlc";
     }
     
     private static boolean detectarSiEsGratis(List<String> generos, List<String> tags) {
