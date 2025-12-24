@@ -104,7 +104,18 @@ public class RAWGScraper {
 
             String titulo = extraerValorJsonManual(jsonBasic, "name");
             String slug = extraerValorJsonManual(jsonBasic, "slug");
-            String tipo = determinarTipoJuego(jsonBasic, titulo); 
+            
+            // --- DETERMINAR TIPO (GAME vs DLC) ---
+            // Usamos EXCLUSIVAMENTE el campo 'parents_count' del detalle.
+            // Si no hay detalle, asumimos 'game' por defecto hasta que se descargue.
+            String tipo = "game";
+            if (jsonDetail != null && !jsonDetail.isEmpty()) {
+                int parentsCount = extraerEnteroJsonManual(jsonDetail, "parents_count");
+                if (parentsCount > 0) {
+                    tipo = "dlc";
+                }
+            }
+
             String imgPrincipal = extraerValorJsonManual(jsonBasic, "background_image");
             int metacritic = extraerMetacritic(jsonBasic);
 
@@ -165,30 +176,6 @@ public class RAWGScraper {
         }
     }
     
-    private static String determinarTipoJuego(String jsonBasic, String titulo) {
-        int tagsIdx = jsonBasic.indexOf("\"tags\":[");
-        if (tagsIdx != -1) {
-            int tagsEndIdx = jsonBasic.indexOf("]", tagsIdx);
-            if (tagsEndIdx != -1) {
-                String tagsContent = jsonBasic.substring(tagsIdx, tagsEndIdx);
-                if (tagsContent.contains("\"name\":\"DLC\"")) {
-                    return "dlc";
-                }
-            }
-        }
-        
-        if (titulo != null) {
-            String lowerCaseTitle = titulo.toLowerCase();
-            if (lowerCaseTitle.contains(" dlc") || 
-                lowerCaseTitle.endsWith("- dlc") || 
-                lowerCaseTitle.contains("expansion") || 
-                lowerCaseTitle.contains("season pass")) {
-                return "dlc";
-            }
-        }
-        return "game";
-    }
-    
     private static boolean detectarSiEsGratis(List<String> generos, List<String> tags) {
         for (String g : generos) {
             if (g.equalsIgnoreCase("Free to Play")) return true;
@@ -204,6 +191,17 @@ public class RAWGScraper {
         if (meta == null || meta.equals("null") || meta.isEmpty()) return 0;
         try {
             return Integer.parseInt(meta);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+    
+    // Nuevo helper para extraer enteros de forma segura
+    private static int extraerEnteroJsonManual(String json, String key) {
+        String val = extraerValorJsonManual(json, key);
+        if (val == null || val.isEmpty() || val.equals("null")) return 0;
+        try {
+            return Integer.parseInt(val);
         } catch (NumberFormatException e) {
             return 0;
         }
