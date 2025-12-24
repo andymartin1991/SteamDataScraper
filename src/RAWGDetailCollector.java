@@ -23,7 +23,13 @@ public class RAWGDetailCollector {
         "5d43c4de1fb64c10bd71eade75b98996",
         "d178a23d354549e69bdb2267329a7f13",
         "fb26a83a918348e8bb7e231b16dd8a29",
-            "d19734a6cf8e4790b728aac15d47eb41"
+            "d19734a6cf8e4790b728aac15d47eb41",
+            "45313bd21d924b078452827d6b69e400",
+            "70f2a2ef78244243b2ef71326b98db92",
+            "8dca1c2e7b8742b789970bc633b516ed",
+            "67ec9adb41164a889f44cc20ef112c24",
+            "88a4ab0fd225435da122274bf0e2a975",
+            "16395406b89e4a50b4295e177f432c78"
     };
     private static int currentKeyIndex = 0;
 

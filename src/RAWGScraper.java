@@ -106,15 +106,8 @@ public class RAWGScraper {
             String slug = extraerValorJsonManual(jsonBasic, "slug");
             
             // --- DETERMINAR TIPO (GAME vs DLC) ---
-            // Usamos EXCLUSIVAMENTE el campo 'parents_count' del detalle.
-            // Si no hay detalle, asumimos 'game' por defecto hasta que se descargue.
-            String tipo = "game";
-            if (jsonDetail != null && !jsonDetail.isEmpty()) {
-                int parentsCount = extraerEnteroJsonManual(jsonDetail, "parents_count");
-                if (parentsCount > 0) {
-                    tipo = "dlc";
-                }
-            }
+            // Lógica robusta basada en parents_count + palabras clave
+            String tipo = determinarTipoJuego(jsonBasic, jsonDetail);
 
             String imgPrincipal = extraerValorJsonManual(jsonBasic, "background_image");
             int metacritic = extraerMetacritic(jsonBasic);
@@ -176,6 +169,63 @@ public class RAWGScraper {
         }
     }
     
+    private static String determinarTipoJuego(String jsonBasic, String jsonDetail) {
+        // 1. Por defecto es GAME
+        String tipo = "game";
+        
+        // 2. Si no hay detalle, no podemos saber si tiene padres, así que asumimos game
+        if (jsonDetail == null || jsonDetail.isEmpty()) return "game";
+
+        int parentsCount = extraerEnteroJsonManual(jsonDetail, "parents_count");
+        
+        // Si NO tiene padres, es un juego base seguro
+        if (parentsCount == 0) return "game";
+
+        // 3. Si TIENE padres, investigamos si es DLC o Standalone/Edición
+        String name = extraerValorJsonManual(jsonBasic, "name");
+        String slug = extraerValorJsonManual(jsonBasic, "slug");
+        String description = extraerValorJsonManual(jsonDetail, "description_raw");
+        if (description == null) description = extraerValorJsonManual(jsonDetail, "description");
+        
+        if (name == null) name = "";
+        if (slug == null) slug = "";
+        if (description == null) description = "";
+
+        String titleSlug = (name + " " + slug).toLowerCase();
+        String fullText = (name + " " + slug + " " + description).toLowerCase();
+
+        // A) Señales de EDICIÓN / BUNDLE (Prevalece sobre DLC)
+        // Si es una edición GOTY, Deluxe, etc., es un JUEGO (que incluye DLCs), no un DLC en sí.
+        if (titleSlug.contains("edition") || 
+            titleSlug.contains("remastered") || 
+            titleSlug.contains("definitive") || 
+            titleSlug.contains("collection") || 
+            titleSlug.contains("anthology") || 
+            titleSlug.contains("trilogy") || 
+            titleSlug.contains("director's cut") ||
+            titleSlug.contains("goty")) {
+            return "game";
+        }
+
+        // B) Señales de DLC (En Título, Slug o Descripción)
+        if (fullText.contains("dlc") || 
+            fullText.contains("season pass") || 
+            fullText.contains("expansion") || 
+            fullText.contains("add-on") || 
+            fullText.contains("addon") || 
+            fullText.contains("soundtrack") || 
+            fullText.contains("requires the base game") || 
+            fullText.contains("downloadable content") ||
+            fullText.contains("contenido descargable") ||
+            fullText.contains("pase de temporada") ||
+            fullText.contains("complemento")) {
+            return "dlc";
+        }
+
+        // C) Fallback: Tiene padre pero no dice explícitamente que sea DLC -> Standalone (ej: Miles Morales)
+        return "game";
+    }
+    
     private static boolean detectarSiEsGratis(List<String> generos, List<String> tags) {
         for (String g : generos) {
             if (g.equalsIgnoreCase("Free to Play")) return true;
@@ -196,7 +246,6 @@ public class RAWGScraper {
         }
     }
     
-    // Nuevo helper para extraer enteros de forma segura
     private static int extraerEnteroJsonManual(String json, String key) {
         String val = extraerValorJsonManual(json, key);
         if (val == null || val.isEmpty() || val.equals("null")) return 0;
