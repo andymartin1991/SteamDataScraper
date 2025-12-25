@@ -144,7 +144,7 @@ public class SteamScraper {
                 // Slug: Añadir ID de Steam para unicidad técnica
                 slug = slug + "-steam-" + appId;
                 
-                // Título: Añadir FECHA COMPLETA para diferenciación visual
+                // Título: Añadir FECHA COMPLETA para diferenciación visual y evitar sobrescritura en GlobalUnion
                 titulo = titulo + " (" + fecha + ")";
             }
 
