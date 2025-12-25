@@ -31,7 +31,7 @@ public class GlobalUnion {
         ObjectMapper mapper = new ObjectMapper();
         
         try {
-            System.out.println("🚀 Iniciando Fusión Global (Steam + RAWG) con Validación de Año, Tipo y Limpieza de Galería...");
+            System.out.println("🚀 Iniciando Fusión Global (Steam + RAWG) con Lógica de Ports y Fechas...");
 
             // --- 1. Cargar todos los juegos de Steam en un mapa por slug ---
             System.out.println("   -> Cargando juegos de Steam en memoria...");
@@ -71,26 +71,22 @@ public class GlobalUnion {
                         if (steamGames.containsKey(slug)) {
                             JsonNode steamGame = steamGames.get(slug);
                             
-                            // VALIDACIÓN CRÍTICA: ¿Son realmente el mismo juego? (Chequeo de Año y Tipo)
+                            // VALIDACIÓN CRÍTICA: ¿Son realmente el mismo juego?
                             if (sonElMismoJuego(steamGame, rawgGame)) {
                                 finalGame = fusionarJuegos(steamGame, rawgGame, mapper);
                                 steamGames.remove(slug); // Lo quitamos del mapa para no duplicarlo al final
                                 mergedCount++;
                             } else {
-                                // Conflicto: Mismo slug pero distinto año o distinto tipo (Game vs DLC).
-                                // Tratamos el de RAWG como independiente.
+                                // Conflicto: Mismo slug pero distinto juego (Remake vs Original, etc.)
                                 ObjectNode rawgGameModificado = (ObjectNode) rawgGame.deepCopy();
                                 
                                 // Generamos un slug único para evitar colisión
                                 String sufijo = extraerAnio(rawgGame) > 0 ? String.valueOf(extraerAnio(rawgGame)) : "rawg";
                                 String nuevoSlug = slug + "-" + sufijo;
                                 
-                                // Si aún así colisionara (muy raro), añadimos random
                                 if (nuevoSlug.equals(slug)) nuevoSlug = slug + "-v2";
                                 
                                 rawgGameModificado.put("slug", nuevoSlug);
-                                
-                                // Limpieza también para juegos exclusivos de RAWG
                                 limpiarGaleria(rawgGameModificado);
                                 
                                 finalGame = rawgGameModificado;
@@ -100,7 +96,7 @@ public class GlobalUnion {
                         } else {
                             // Si no existe en Steam, es un exclusivo de consola/móvil
                             ObjectNode rawgGameNode = (ObjectNode) rawgGame;
-                            limpiarGaleria(rawgGameNode); // Limpieza
+                            limpiarGaleria(rawgGameNode); 
                             finalGame = rawgGameNode;
                             rawgOnlyCount++;
                         }
@@ -118,9 +114,7 @@ public class GlobalUnion {
                 System.out.println("   -> Añadiendo " + steamOnlyCount + " juegos exclusivos de Steam...");
                 
                 for (JsonNode steamGame : steamGames.values()) {
-                    // Limpieza también para exclusivos de Steam
                     limpiarGaleria((ObjectNode) steamGame);
-                    
                     writer.write(",\n");
                     writer.write(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(steamGame));
                 }
@@ -136,7 +130,7 @@ public class GlobalUnion {
                 System.out.println("   -----------------------------------------");
                 System.out.println("   🔄 PROCESO:");
                 System.out.println("      - 🔗 Fusionados (Coinciden): " + mergedCount);
-                System.out.println("      - 🛡️ Conflictos Resueltos:   " + conflictosResueltos + " (Año o Tipo distinto)");
+                System.out.println("      - 🛡️ Conflictos Resueltos:   " + conflictosResueltos + " (Remakes/Reboots separados)");
                 System.out.println("      - 🎮 Solo en RAWG (Nuevos):  " + rawgOnlyCount);
                 System.out.println("      - 💻 Solo en Steam (PC):     " + steamOnlyCount);
                 System.out.println("   -----------------------------------------");
@@ -181,7 +175,6 @@ public class GlobalUnion {
         String tipoSteam = steam.path("tipo").asText("game");
         String tipoRawg = rawg.path("tipo").asText("game");
         
-        // Si son tipos distintos (uno game y otro dlc), NO son el mismo
         if (!tipoSteam.equalsIgnoreCase(tipoRawg)) {
             return false;
         }
@@ -190,30 +183,62 @@ public class GlobalUnion {
         int anioSteam = extraerAnio(steam);
         int anioRawg = extraerAnio(rawg);
         
-        // Si alguno no tiene año, asumimos que SÍ son el mismo (ante la duda, fusionamos por slug)
         if (anioSteam == 0 || anioRawg == 0) return true;
         
-        // Si la diferencia es mayor a 1 año, NO son el mismo juego
-        return Math.abs(anioSteam - anioRawg) <= 1;
+        int diff = Math.abs(anioSteam - anioRawg);
+
+        // CASO A: Lanzamiento cercano (mismo año o siguiente) -> Es el mismo juego
+        if (diff <= 1) return true;
+
+        // CASO B: Lanzamiento lejano (Ports vs Remakes)
+        // Si la diferencia es mayor a 1 año, solo fusionamos si el título es IDÉNTICO
+        // y la diferencia no es extrema (para evitar mezclar Remakes con Originales).
+        
+        String tituloSteam = normalizeTitle(steam.path("titulo").asText(""));
+        String tituloRawg = normalizeTitle(rawg.path("titulo").asText(""));
+
+        if (tituloSteam.equals(tituloRawg)) {
+            // Si tienen el mismo título exacto:
+            // - Si la diferencia es < 10 años -> Asumimos PORT (ej: God of War 2018 vs PC 2022) -> FUSIONAR
+            // - Si la diferencia es >= 10 años -> Asumimos REMAKE/REBOOT (ej: RE2 1998 vs 2019) -> SEPARAR
+            return diff < 10;
+        }
+
+        return false;
+    }
+    
+    private static String normalizeTitle(String title) {
+        if (title == null) return "";
+        // Quitamos caracteres no alfanuméricos y pasamos a minúsculas para comparar
+        return title.toLowerCase().replaceAll("[^a-z0-9]", "");
     }
     
     private static int extraerAnio(JsonNode game) {
         String fecha = game.path("fecha_lanzamiento").asText();
         if (fecha == null || fecha.isEmpty()) return 0;
         try {
-            // Formato esperado: YYYY-MM-DD
             if (fecha.length() >= 4) {
                 return Integer.parseInt(fecha.substring(0, 4));
             }
-        } catch (Exception e) {
-            // Ignorar errores de parseo
-        }
+        } catch (Exception e) {}
         return 0;
     }
 
     private static JsonNode fusionarJuegos(JsonNode steamGame, JsonNode rawgGame, ObjectMapper mapper) {
-        // Clonamos el juego de Steam para no modificar el original
         ObjectNode base = (ObjectNode) steamGame.deepCopy();
+
+        // 0. FECHA: Prevalece la más antigua (Original Release Date)
+        String fechaSteam = base.path("fecha_lanzamiento").asText("");
+        String fechaRawg = rawgGame.path("fecha_lanzamiento").asText("");
+        
+        if (!fechaRawg.isEmpty() && !fechaSteam.isEmpty()) {
+            // Comparación lexicográfica de ISO dates (YYYY-MM-DD) funciona bien
+            if (fechaRawg.compareTo(fechaSteam) < 0) {
+                base.put("fecha_lanzamiento", fechaRawg);
+            }
+        } else if (fechaSteam.isEmpty() && !fechaRawg.isEmpty()) {
+            base.put("fecha_lanzamiento", fechaRawg);
+        }
 
         // 1. Metacritic: prevalece el más alto
         int steamMetacritic = base.path("metacritic").asInt(0);
@@ -222,16 +247,16 @@ public class GlobalUnion {
             base.put("metacritic", rawgMetacritic);
         }
 
-        // 2. Plataformas: añadir las de RAWG si no están en Steam
+        // 2. Plataformas
         fusionarArray(base, rawgGame, "plataformas");
 
-        // 3. Géneros: añadir los de RAWG si no están en Steam
+        // 3. Géneros
         fusionarArray(base, rawgGame, "generos");
 
-        // 4. Galerías: añadir las de RAWG si no están en Steam
+        // 4. Galerías
         fusionarArray(base, rawgGame, "galeria");
 
-        // 5. Tiendas: lógica especial (filtrar duplicados de PC)
+        // 5. Tiendas
         ArrayNode steamStores = (ArrayNode) base.path("tiendas");
         ArrayNode rawgStores = (ArrayNode) rawgGame.path("tiendas");
         Set<String> existingStoreNames = new HashSet<>();
@@ -244,20 +269,18 @@ public class GlobalUnion {
         if (rawgStores != null) {
             for (JsonNode storeNode : rawgStores) {
                 String storeName = storeNode.path("tienda").asText().toLowerCase();
-                // Añadimos si la tienda no es de PC (para evitar duplicados como "Steam") y no existe ya
                 if (!storeName.equals("steam") && !storeName.equals("gog") && !storeName.equals("epic games") && !existingStoreNames.contains(storeName)) {
                     steamStores.add(storeNode);
                 }
             }
         }
         
-        // 6. LIMPIEZA FINAL: Eliminar imagen principal de la galería
+        // 6. LIMPIEZA FINAL
         limpiarGaleria(base);
         
         return base;
     }
 
-    // Método auxiliar para fusionar arrays de strings simples (plataformas, generos, galeria)
     private static void fusionarArray(ObjectNode base, JsonNode source, String fieldName) {
         ArrayNode baseArray = (ArrayNode) base.path(fieldName);
         ArrayNode sourceArray = (ArrayNode) source.path(fieldName);
@@ -280,7 +303,6 @@ public class GlobalUnion {
         }
     }
     
-    // NUEVO MÉTODO: Elimina la imagen principal de la galería para evitar duplicados
     private static void limpiarGaleria(ObjectNode game) {
         String imgPrincipal = game.path("img_principal").asText("");
         if (imgPrincipal.isEmpty()) return;
