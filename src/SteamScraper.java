@@ -8,8 +8,10 @@ import java.sql.Statement;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPOutputStream;
@@ -29,7 +31,13 @@ public class SteamScraper {
                 System.err.println("❌ ERROR: No se encontró el driver JDBC de SQLite.");
                 return;
             }
+            
+            // PASO 1: DETECTAR DUPLICADOS (Slugs y Títulos)
+            System.out.println("🔍 Analizando duplicados para aplicar sufijos inteligentes...");
+            Set<Integer> idsConflictivos = detectarIdsConflictivos();
+            System.out.println("⚠️ Se detectaron " + idsConflictivos.size() + " juegos con nombres/slugs duplicados que serán renombrados.");
 
+            // PASO 2: EXPORTACIÓN
             try (Writer w = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(OUTPUT_FILE)), "UTF-8")) {
                 w.write("[\n");
                 
@@ -47,7 +55,8 @@ public class SteamScraper {
                         int appId = rs.getInt("app_id");
                         String jsonCrudo = rs.getString("json_data");
                         
-                        String jsonProcesado = procesarJuego(appId, jsonCrudo);
+                        // Pasamos el set de conflictivos para decidir si renombrar
+                        String jsonProcesado = procesarJuego(appId, jsonCrudo, idsConflictivos.contains(appId));
                         
                         if (jsonProcesado != null) {
                             if (!primero) {
@@ -77,8 +86,45 @@ public class SteamScraper {
             e.printStackTrace();
         }
     }
+    
+    // --- PASO 1: DETECCIÓN DE CONFLICTOS ---
+    private static Set<Integer> detectarIdsConflictivos() {
+        Set<Integer> conflictivos = new HashSet<>();
+        Map<String, List<Integer>> slugMap = new HashMap<>();
+        
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
+             Statement stmt = conn.createStatement()) {
+            
+            ResultSet rs = stmt.executeQuery("SELECT app_id, json_data FROM steam_raw_data");
+            while (rs.next()) {
+                int appId = rs.getInt("app_id");
+                String json = rs.getString("json_data");
+                
+                // Filtros básicos para no procesar basura
+                if (json.contains("\"coming_soon\":true")) continue;
+                String tipo = extraerValorJsonManual(json, "type");
+                if (tipo == null || (!tipo.equals("game") && !tipo.equals("dlc"))) continue;
 
-    private static String procesarJuego(int appId, String json) {
+                String titulo = extraerValorJsonManual(json, "name");
+                String slug = generarSlug(titulo);
+                
+                slugMap.computeIfAbsent(slug, k -> new ArrayList<>()).add(appId);
+            }
+            
+            // Identificar los que tienen colisión
+            for (List<Integer> ids : slugMap.values()) {
+                if (ids.size() > 1) {
+                    conflictivos.addAll(ids);
+                }
+            }
+            
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return conflictivos;
+    }
+
+    private static String procesarJuego(int appId, String json, boolean esConflictivo) {
         try {
             String tipo = extraerValorJsonManual(json, "type");
             
@@ -92,6 +138,16 @@ public class SteamScraper {
 
             String titulo = extraerValorJsonManual(json, "name");
             String slug = generarSlug(titulo);
+            
+            // LÓGICA DE RENOMBRADO INTELIGENTE
+            if (esConflictivo) {
+                // Slug: Añadir ID de Steam para unicidad técnica
+                slug = slug + "-steam-" + appId;
+                
+                // Título: Añadir FECHA COMPLETA para diferenciación visual
+                titulo = titulo + " (" + fecha + ")";
+            }
+
             String descCorta = extraerDescripcionCorta(json);
             String imgPrincipal = extraerValorJsonManual(json, "header_image");
             if (imgPrincipal != null) {
@@ -148,13 +204,32 @@ public class SteamScraper {
 
     private static String generarSlug(String titulo) {
         if (titulo == null) return "unknown";
+        
+        // 1. Normalización Unicode (NFD)
         String normalized = Normalizer.normalize(titulo, Normalizer.Form.NFD);
+        
+        // 2. Eliminar marcas diacríticas
         String slug = normalized.replaceAll("[\\p{InCombiningDiacriticalMarks}]", "");
+        
+        // 3. Pasar a minúsculas
         slug = slug.toLowerCase();
-        slug = slug.replaceAll("[^a-z0-9\\s-]", ""); 
+        
+        // 4. Reemplazar caracteres NO permitidos (Permitimos letras unicode y números)
+        slug = slug.replaceAll("[^\\p{L}\\p{N}\\s-]", ""); 
+        
+        // 5. Reemplazar espacios por guiones
         slug = slug.replaceAll("\\s+", "-"); 
+        
+        // 6. Eliminar guiones duplicados
         slug = slug.replaceAll("-+", "-"); 
-        return slug.trim();
+        
+        // 7. Trim de guiones
+        if (slug.startsWith("-")) slug = slug.substring(1);
+        if (slug.endsWith("-")) slug = slug.substring(0, slug.length() - 1);
+        
+        if (slug.isEmpty()) return "unknown";
+        
+        return slug;
     }
 
     private static String extraerFechaISO(String json) {
