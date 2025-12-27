@@ -157,6 +157,11 @@ public class SteamScraper {
             
             List<String> generos = extraerGeneros(json);
             List<String> galeria = extraerGaleria(json);
+            List<Map<String, String>> videos = extraerVideos(json); 
+            
+            // NUEVO: Extracción de Developers y Publishers
+            List<String> developers = extraerListaSimple(json, "developers");
+            List<String> publishers = extraerListaSimple(json, "publishers");
             
             Map<String, List<String>> idiomas = procesarIdiomas(json);
             int metacritic = extraerMetacritic(json);
@@ -175,6 +180,11 @@ public class SteamScraper {
             sb.append("    \"plataformas\": [\"PC\"],\n"); 
             sb.append("    \"img_principal\": \"").append(imgPrincipal).append("\",\n");
             sb.append("    \"galeria\": ").append(listaAJson(galeria)).append(",\n");
+            sb.append("    \"videos\": ").append(listaMapAJson(videos)).append(",\n");
+            
+            // NUEVO: Añadir campos al JSON
+            sb.append("    \"desarrolladores\": ").append(listaAJson(developers)).append(",\n");
+            sb.append("    \"editores\": ").append(listaAJson(publishers)).append(",\n");
             
             sb.append("    \"idiomas\": {\n");
             sb.append("      \"voces\": ").append(listaAJson(idiomas.get("voces"))).append(",\n");
@@ -204,48 +214,28 @@ public class SteamScraper {
 
     private static String generarSlug(String titulo) {
         if (titulo == null) return "unknown";
-        
-        // 1. Normalización Unicode (NFD)
         String normalized = Normalizer.normalize(titulo, Normalizer.Form.NFD);
-        
-        // 2. Eliminar marcas diacríticas
         String slug = normalized.replaceAll("[\\p{InCombiningDiacriticalMarks}]", "");
-        
-        // 3. Pasar a minúsculas
         slug = slug.toLowerCase();
-        
-        // 4. Reemplazar caracteres NO permitidos (Permitimos letras unicode y números)
         slug = slug.replaceAll("[^\\p{L}\\p{N}\\s-]", ""); 
-        
-        // 5. Reemplazar espacios por guiones
         slug = slug.replaceAll("\\s+", "-"); 
-        
-        // 6. Eliminar guiones duplicados
         slug = slug.replaceAll("-+", "-"); 
-        
-        // 7. Trim de guiones
         if (slug.startsWith("-")) slug = slug.substring(1);
         if (slug.endsWith("-")) slug = slug.substring(0, slug.length() - 1);
-        
         if (slug.isEmpty()) return "unknown";
-        
         return slug;
     }
 
     private static String extraerFechaISO(String json) {
         String rawDate = extraerValorJsonManual(json, "date");
         if (rawDate == null || rawDate.contains("TBA") || rawDate.trim().isEmpty()) return null;
-        
         try {
             String[] parts = rawDate.replace(",", "").split(" ");
             if (parts.length < 3) return null; 
-            
             String mesStr = parts[0].substring(0, 3).toLowerCase();
             String dia = parts[1];
             String anio = parts[2];
-            
             if (dia.length() == 1) dia = "0" + dia;
-            
             String mes = switch (mesStr) {
                 case "jan" -> "01"; case "feb" -> "02"; case "mar" -> "03";
                 case "apr" -> "04"; case "may" -> "05"; case "jun" -> "06";
@@ -253,7 +243,6 @@ public class SteamScraper {
                 case "oct" -> "10"; case "nov" -> "11"; case "dec" -> "12";
                 default -> "01";
             };
-            
             return anio + "-" + mes + "-" + dia;
         } catch (Exception e) {
             return null; 
@@ -296,6 +285,62 @@ public class SteamScraper {
         }
         return screenshots;
     }
+    
+    private static List<Map<String, String>> extraerVideos(String json) {
+        List<Map<String, String>> videos = new ArrayList<>();
+        int idxMovies = json.indexOf("\"movies\"");
+        if (idxMovies == -1) return videos;
+
+        int endMovies = json.indexOf("]", idxMovies);
+        if (endMovies == -1) return videos;
+
+        String moviesSection = json.substring(idxMovies, endMovies + 1);
+        
+        Pattern pId = Pattern.compile("\"id\":\\s*(\\d+)");
+        Matcher mId = pId.matcher(moviesSection);
+        
+        List<Integer> startIndices = new ArrayList<>();
+        while (mId.find()) {
+            startIndices.add(mId.start());
+        }
+        
+        for (int i = 0; i < startIndices.size(); i++) {
+            int start = startIndices.get(i);
+            int end = (i < startIndices.size() - 1) ? startIndices.get(i+1) : moviesSection.length();
+            String block = moviesSection.substring(start, end);
+            
+            String name = extraerValorJsonManual(block, "name");
+            String thumbnail = extraerValorJsonManual(block, "thumbnail");
+            String url = null;
+            
+            Matcher mMp4Max = Pattern.compile("\"mp4\":\\s*\\{.*?\"max\":\"([^\"]+)\"").matcher(block);
+            if (mMp4Max.find()) url = mMp4Max.group(1);
+            
+            if (url == null) {
+                Matcher mMp4480 = Pattern.compile("\"mp4\":\\s*\\{.*?\"480\":\"([^\"]+)\"").matcher(block);
+                if (mMp4480.find()) url = mMp4480.group(1);
+            }
+            
+            if (url == null) {
+                 Matcher mWebm = Pattern.compile("\"webm\":\\s*\\{.*?\"max\":\"([^\"]+)\"").matcher(block);
+                 if (mWebm.find()) url = mWebm.group(1);
+            }
+            
+            if (url == null) {
+                url = extraerValorJsonManual(block, "hls_h264"); 
+                if (url == null) url = extraerValorJsonManual(block, "dash_h264");
+            }
+            
+            if (url != null && name != null) {
+                Map<String, String> v = new HashMap<>();
+                v.put("titulo", limpiarTexto(name));
+                v.put("url", url.replace("\\/", "/"));
+                if (thumbnail != null) v.put("thumbnail", thumbnail.replace("\\/", "/"));
+                videos.add(v);
+            }
+        }
+        return videos;
+    }
 
     private static List<String> extraerGeneros(String json) {
         List<String> generos = new ArrayList<>();
@@ -312,6 +357,27 @@ public class SteamScraper {
             generos.add(m.group(1));
         }
         return generos;
+    }
+    
+    // NUEVO: Método genérico para extraer arrays simples de strings (developers, publishers)
+    private static List<String> extraerListaSimple(String json, String key) {
+        List<String> lista = new ArrayList<>();
+        int idx = json.indexOf("\"" + key + "\"");
+        if (idx == -1) return lista;
+        
+        int startArray = json.indexOf("[", idx);
+        int endArray = json.indexOf("]", startArray);
+        if (startArray == -1 || endArray == -1) return lista;
+        
+        String content = json.substring(startArray + 1, endArray);
+        // Dividir por comas, pero cuidado con comas dentro de comillas
+        // Como es un array simple de strings "A", "B", podemos usar regex simple
+        Pattern p = Pattern.compile("\"([^\"]+)\"");
+        Matcher m = p.matcher(content);
+        while(m.find()) {
+            lista.add(m.group(1));
+        }
+        return lista;
     }
     
     private static int extraerMetacritic(String json) {
@@ -430,6 +496,24 @@ public class SteamScraper {
             if (k < lista.size() - 1) sb.append(", ");
         }
         sb.append("]");
+        return sb.toString();
+    }
+    
+    private static String listaMapAJson(List<Map<String, String>> lista) {
+        if (lista == null || lista.isEmpty()) return "[]";
+        StringBuilder sb = new StringBuilder("[\n");
+        for (int i = 0; i < lista.size(); i++) {
+            Map<String, String> map = lista.get(i);
+            sb.append("      {\n");
+            sb.append("        \"titulo\": \"").append(map.get("titulo")).append("\",\n");
+            if (map.containsKey("thumbnail")) {
+                sb.append("        \"thumbnail\": \"").append(map.get("thumbnail")).append("\",\n");
+            }
+            sb.append("        \"url\": \"").append(map.get("url")).append("\"\n");
+            sb.append("      }");
+            if (i < lista.size() - 1) sb.append(",\n");
+        }
+        sb.append("\n    ]");
         return sb.toString();
     }
 }

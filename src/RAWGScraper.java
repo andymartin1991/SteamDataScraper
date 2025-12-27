@@ -116,6 +116,17 @@ public class RAWGScraper {
             List<String> tags = extraerListaDeObjetos(jsonBasic, "tags");
             List<String> galeria = extraerGaleria(jsonBasic);
             
+            // NUEVO: Extracción de Developers y Publishers (con fallback al detalle)
+            List<String> developers = extraerListaDeObjetos(jsonBasic, "developers");
+            if (developers.isEmpty() && jsonDetail != null) {
+                developers = extraerListaDeObjetos(jsonDetail, "developers");
+            }
+            
+            List<String> publishers = extraerListaDeObjetos(jsonBasic, "publishers");
+            if (publishers.isEmpty() && jsonDetail != null) {
+                publishers = extraerListaDeObjetos(jsonDetail, "publishers");
+            }
+            
             boolean isFree = detectarSiEsGratis(generos, tags);
 
             Set<String> plataformasSet = new HashSet<>(extraerPlataformas(jsonBasic));
@@ -152,6 +163,13 @@ public class RAWGScraper {
             sb.append("    \"plataformas\": ").append(listaAJson(plataformasFinales)).append(",\n"); 
             sb.append("    \"img_principal\": \"").append(limpiarTexto(imgPrincipal)).append("\",\n");
             sb.append("    \"galeria\": ").append(listaAJson(galeria)).append(",\n");
+            
+            // NUEVO: Campo videos vacío para consistencia
+            sb.append("    \"videos\": [],\n");
+            
+            // NUEVO: Añadir campos al JSON
+            sb.append("    \"desarrolladores\": ").append(listaAJson(developers)).append(",\n");
+            sb.append("    \"editores\": ").append(listaAJson(publishers)).append(",\n");
             
             sb.append("    \"idiomas\": {\n"); 
             sb.append("      \"voces\": [],\n");
@@ -240,14 +258,19 @@ public class RAWGScraper {
 
     private static List<String> extraerListaDeObjetos(String json, String key) {
         List<String> resultados = new ArrayList<>();
-        String searchKey = "\"" + key + "\":[";
-        int startIdx = json.indexOf(searchKey);
-        if (startIdx == -1) return resultados;
+        // CORRECCIÓN: Búsqueda más flexible (permite espacios)
+        // Buscamos "key": [  o "key":[
+        String searchKey = "\"" + key + "\"";
+        int keyIdx = json.indexOf(searchKey);
+        if (keyIdx == -1) return resultados;
+        
+        int startArray = json.indexOf("[", keyIdx + searchKey.length());
+        if (startArray == -1) return resultados;
 
-        int endIdx = json.indexOf("]", startIdx);
-        if (endIdx == -1) return resultados;
+        int endArray = json.indexOf("]", startArray);
+        if (endArray == -1) return resultados;
 
-        String arrayContent = json.substring(startIdx + searchKey.length(), endIdx);
+        String arrayContent = json.substring(startArray + 1, endArray);
         Pattern p = Pattern.compile("\"name\":\"([^\"]+)\"");
         Matcher m = p.matcher(arrayContent);
         while (m.find()) {
