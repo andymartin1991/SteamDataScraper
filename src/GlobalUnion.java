@@ -231,7 +231,7 @@ public class GlobalUnion {
         String tipoRawg = rawg.path("tipo").asText("game");
         
         if (!tipoSteam.equalsIgnoreCase(tipoRawg)) {
-            return false; // Nunca fusionar Juego con DLC
+            return false; // Nunca fusionar Juego con DLC en la pasada inteligente
         }
 
         // 1. Verificar Desarrollador (Intersección de conjuntos)
@@ -329,16 +329,18 @@ public class GlobalUnion {
         return sb.toString();
     }
     
-    // --- LÓGICA DE VALIDACIÓN DE FUSIÓN ---
+    // --- LÓGICA DE VALIDACIÓN DE FUSIÓN (RESTAURADA) ---
     
     private static boolean sonElMismoJuego(JsonNode steam, JsonNode rawg) {
+        // 1. Tipos: Deben ser iguales (game vs game, dlc vs dlc)
         String tipoSteam = steam.path("tipo").asText("game");
         String tipoRawg = rawg.path("tipo").asText("game");
         
         if (!tipoSteam.equalsIgnoreCase(tipoRawg)) {
-            return false;
+            return false; // RESTAURADO: No fusionar si los tipos difieren
         }
 
+        // 2. Fechas: Solo validamos que no sean juegos distintos con mismo nombre (Remakes)
         int anioSteam = extraerAnio(steam);
         int anioRawg = extraerAnio(rawg);
         
