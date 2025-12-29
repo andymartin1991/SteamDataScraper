@@ -11,6 +11,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -123,6 +124,16 @@ public class UpcomingGamesScraper {
 
             List<String> generos = extraerListaDeObjetos(jsonBasic, "genres");
             List<String> galeria = extraerGaleria(jsonBasic);
+            
+            // LIMPIEZA DE GALERÍA: Eliminar imgPrincipal si está duplicada
+            if (imgPrincipal != null && !imgPrincipal.isEmpty()) {
+                Iterator<String> it = galeria.iterator();
+                while (it.hasNext()) {
+                    if (it.next().equals(imgPrincipal)) {
+                        it.remove();
+                    }
+                }
+            }
             
             List<String> developers = extraerListaDeObjetos(jsonBasic, "developers");
             if (developers.isEmpty() && jsonDetail != null) {
