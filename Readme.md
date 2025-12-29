@@ -54,7 +54,7 @@ Transforman los datos crudos de SQLite a JSON limpio y normalizado.
         1.  **Fusión Exacta:** Por Título Normalizado (ej. "Half-Life 2" == "half-life-2").
         2.  **Fusión Inteligente (Fuzzy):** Para juegos con títulos ligeramente distintos (ej. "LEGO Batman" vs "LEGO Batman: The Videogame").
             *   *Criterios:* Diferencia de Año <= 1 **Y** Mismo Desarrollador **Y** Título parcial.
-            *   *Seguridad:* **Nunca** fusiona un Juego con un DLC.
+    *   **Seguridad Estricta:** Nunca fusiona un **Juego** con un **DLC**, incluso si coinciden en título o desarrollador.
     *   **Prioridad de Datos:**
         *   *Base:* Steam (manda en videos, descripción, etc.).
         *   *Listas:* Unión sin duplicados (Plataformas, Géneros, Devs, Editores).
