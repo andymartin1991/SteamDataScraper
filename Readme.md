@@ -46,12 +46,19 @@ Transforman los datos crudos de SQLite a JSON limpio y normalizado.
     *   **Robustez:** Implementa *fallback* al detalle si faltan datos (devs/publishers) en la lista básica.
     *   **Tiendas:** Construye enlaces a tiendas de consola (PS Store, Xbox, Nintendo).
 
+*   **`UpcomingGamesScraper` (NUEVO)**:
+    *   Genera: `proximos_games.json.gz`.
+    *   **Propósito:** Crea una lista de próximos lanzamientos, enfocada en consolas.
+    *   **Filtros:**
+        *   **Fecha:** Solo incluye juegos con fecha de lanzamiento futura o marcados como "TBA".
+        *   **Plataforma:** Descarta juegos que son **exclusivos de PC**.
+
 ### 4. Fusión Final (Union)
 *   **`GlobalUnion`**:
     *   **Input:** `steam_games.json.gz` + `rawg_games.json.gz`.
     *   **Output:** **`global_games.json.gz`**.
     *   **Algoritmo de Fusión en 2 Pasadas:**
-        1.  **Fusión Exacta:** Por Título Normalizado (ej. "Half-Life 2" == "half-life-2").
+        1.  **Fusión Exacta:** Por Título Normalizado.
         2.  **Fusión Inteligente (Fuzzy):** Para juegos con títulos ligeramente distintos (ej. "LEGO Batman" vs "LEGO Batman: The Videogame").
             *   *Criterios:* Diferencia de Año <= 1 **Y** Mismo Desarrollador **Y** Título parcial.
     *   **Seguridad Estricta:** Nunca fusiona un **Juego** con un **DLC**, incluso si coinciden en título o desarrollador.
@@ -82,6 +89,8 @@ Configuradas en:
 
 ## ▶️ Flujo de Ejecución Recomendado
 
+### Flujo Principal (Juegos Lanzados)
+
 1.  **Recolección (Raw):**
     ```bash
     ./gradlew SteamRawCollector.main()
@@ -104,7 +113,12 @@ Configuradas en:
     ./gradlew GlobalUnion.main()
     ```
 
-El resultado final estará en **`global_games.json.gz`**.
+### Flujo Secundario (Próximos Lanzamientos)
+
+Para generar la lista de próximos lanzamientos de consola:
+```bash
+./gradlew UpcomingGamesScraper.main()
+```
 
 ---
 
