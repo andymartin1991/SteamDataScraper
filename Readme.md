@@ -46,7 +46,7 @@ Transforman los datos crudos de SQLite a JSON limpio y normalizado.
     *   **Robustez:** Implementa *fallback* al detalle si faltan datos (devs/publishers) en la lista básica.
     *   **Tiendas:** Construye enlaces a tiendas de consola (PS Store, Xbox, Nintendo).
 
-*   **`UpcomingGamesScraper` (NUEVO)**:
+*   **`RAWGUpcomingScraper` (NUEVO)**:
     *   Genera: `proximos_games.json.gz`.
     *   **Propósito:** Crea una lista de próximos lanzamientos, enfocada en consolas.
     *   **Filtros:**
@@ -117,7 +117,7 @@ Configuradas en:
 
 Para generar la lista de próximos lanzamientos de consola:
 ```bash
-./gradlew UpcomingGamesScraper.main()
+./gradlew RAWGUpcomingScraper.main()
 ```
 
 ---
