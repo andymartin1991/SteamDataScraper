@@ -30,6 +30,7 @@ Completan la información básica con descripciones detalladas, tiendas y metada
 *   **`RAWGDetailCollector`**:
     *   **Fuente:** RAWG.io API (`/games/{id}`, `/games/{id}/stores`).
     *   **Lógica Inteligente:** Prioriza juegos de consola/multiplataforma. Implementa *Cooldown* para reintentos fallidos.
+    *   **Autorreparación:** Detecta juegos con descripciones vacías y reintenta su descarga automáticamente tras un periodo de enfriamiento.
 
 ### 3. Procesamiento y Exportación (Scrapers)
 Transforman los datos crudos de SQLite a JSON limpio y normalizado.
@@ -47,11 +48,17 @@ Transforman los datos crudos de SQLite a JSON limpio y normalizado.
     *   **Tiendas:** Construye enlaces a tiendas de consola (PS Store, Xbox, Nintendo).
 
 *   **`RAWGUpcomingScraper` (NUEVO)**:
-    *   Genera: `proximos_games.json.gz`.
+    *   Genera: `rawg_proximos_games.json.gz`.
     *   **Propósito:** Crea una lista de próximos lanzamientos, enfocada en consolas.
     *   **Filtros:**
         *   **Fecha:** Solo incluye juegos con fecha de lanzamiento futura o marcados como "TBA".
         *   **Plataforma:** Descarta juegos que son **exclusivos de PC**.
+
+*   **`SteamUpcomingScraper` (NUEVO)**:
+    *   Genera: `steam_proximos_games.json.gz`.
+    *   **Propósito:** Crea una lista de próximos lanzamientos desde Steam.
+    *   **Filtros:**
+        *   **Fecha:** Solo incluye juegos con fecha de lanzamiento futura ("coming_soon": true).
 
 ### 4. Fusión Final (Union)
 *   **`GlobalUnion`**:
@@ -115,9 +122,10 @@ Configuradas en:
 
 ### Flujo Secundario (Próximos Lanzamientos)
 
-Para generar la lista de próximos lanzamientos de consola:
+Para generar la lista de próximos lanzamientos:
 ```bash
 ./gradlew RAWGUpcomingScraper.main()
+./gradlew SteamUpcomingScraper.main()
 ```
 
 ---

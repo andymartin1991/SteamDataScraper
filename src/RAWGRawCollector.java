@@ -32,7 +32,9 @@ public class RAWGRawCollector {
             "8dca1c2e7b8742b789970bc633b516ed",
             "67ec9adb41164a889f44cc20ef112c24",
             "88a4ab0fd225435da122274bf0e2a975",
-            "16395406b89e4a50b4295e177f432c78"
+            "16395406b89e4a50b4295e177f432c78",
+            "cdb2e34c650e468a89cde2d5aa7f1a69",
+            "d23bb60d7d3d4f1f87157ebc39a9dd4b"
     };
     private static int currentKeyIndex = 0;
 
