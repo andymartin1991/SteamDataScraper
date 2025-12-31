@@ -166,6 +166,9 @@ public class SteamScraper {
             Map<String, List<String>> idiomas = procesarIdiomas(json);
             int metacritic = extraerMetacritic(json);
             boolean isFree = json.contains("\"is_free\":true");
+            
+            // NUEVO: Extracción de Edad Recomendada (Prioridad PEGI)
+            int requiredAge = extraerRequiredAge(json);
 
             StringBuilder sb = new StringBuilder();
             sb.append("  {\n");
@@ -192,6 +195,7 @@ public class SteamScraper {
             sb.append("    },\n");
             
             sb.append("    \"metacritic\": ").append(metacritic).append(",\n");
+            sb.append("    \"edad_recomendada\": ").append(requiredAge).append(",\n");
             
             sb.append("    \"tiendas\": [\n");
             sb.append("      {\n");
@@ -386,6 +390,84 @@ public class SteamScraper {
             Matcher m = p.matcher(json);
             if (m.find()) {
                 return Integer.parseInt(m.group(1));
+            }
+        } catch (Exception e) {}
+        return 0;
+    }
+    
+    private static int extraerRequiredAge(String json) {
+        // ESTRATEGIA: Prioridad PEGI > ESRB > Máximo Global
+        
+        // 1. Buscar PEGI explícito
+        int pegi = buscarRatingEspecifico(json, "pegi");
+        if (pegi > 0) return pegi;
+        
+        // 2. Buscar ESRB explícito y normalizar
+        int esrb = buscarRatingEspecifico(json, "esrb"); // Devuelve 0, 10, 13, 17, 18 (mapeado interno de Steam a veces es numérico o string)
+        if (esrb > 0) {
+            // Normalizar ESRB a PEGI
+            if (esrb >= 17) return 16;
+            if (esrb >= 13) return 12;
+            if (esrb >= 10) return 7;
+            return esrb;
+        }
+        
+        // 3. Fallback: Máximo global (lo que teníamos antes)
+        int maxAge = 0;
+        try {
+            Pattern p = Pattern.compile("\"required_age\":\\s*\"?(\\d+)\"?");
+            Matcher m = p.matcher(json);
+            while (m.find()) {
+                try {
+                    int age = Integer.parseInt(m.group(1));
+                    if (age > maxAge) maxAge = age;
+                } catch (NumberFormatException e) {}
+            }
+        } catch (Exception e) {}
+        
+        // Normalización final del fallback
+        if (maxAge <= 0) return 0;
+        if (maxAge <= 3) return 3;
+        if (maxAge <= 7) return 7;
+        if (maxAge <= 10) return 7;
+        if (maxAge <= 12) return 12;
+        if (maxAge <= 14) return 12;
+        if (maxAge <= 16) return 16;
+        if (maxAge <= 17) return 16;
+        return 18;
+    }
+    
+    private static int buscarRatingEspecifico(String json, String sistema) {
+        try {
+            // Buscamos el bloque del sistema: "pegi": { ... }
+            int idxSystem = json.indexOf("\"" + sistema + "\":");
+            if (idxSystem == -1) return 0;
+            
+            // Buscamos el cierre del objeto para limitar la búsqueda
+            int idxEnd = json.indexOf("}", idxSystem);
+            if (idxEnd == -1) return 0;
+            
+            String block = json.substring(idxSystem, idxEnd);
+            
+            // Buscamos "rating": "X" dentro del bloque
+            Pattern p = Pattern.compile("\"rating\":\\s*\"?([a-zA-Z0-9]+)\"?");
+            Matcher m = p.matcher(block);
+            if (m.find()) {
+                String val = m.group(1).toLowerCase();
+                
+                // Parsear valores numéricos directos (PEGI suele ser "3", "7", etc.)
+                if (val.matches("\\d+")) {
+                    return Integer.parseInt(val);
+                }
+                
+                // Parsear códigos de ESRB (e, e10, t, m, ao)
+                if (sistema.equals("esrb")) {
+                    if (val.equals("e")) return 0;
+                    if (val.equals("e10")) return 10;
+                    if (val.equals("t")) return 13;
+                    if (val.equals("m")) return 17;
+                    if (val.equals("ao")) return 18;
+                }
             }
         } catch (Exception e) {}
         return 0;

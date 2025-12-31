@@ -120,7 +120,7 @@ public class GlobalUnion {
                             JsonNode steamGame = steamGamesByTitle.get(rawgTitleNorm);
                             
                             if (sonElMismoJuego(steamGame, rawgGame)) {
-                                JsonNode finalGame = fusionarJuegos(steamGame, rawgGame, mapper);
+                                JsonNode finalGame = fusionarJuegos(steamGame, rawgGame, mapper, conflictWriter);
                                 steamGamesByTitle.put(rawgTitleNorm, finalGame);
                                 ((ObjectNode)finalGame).put("_merged", true);
                                 mergedCount++;
@@ -166,7 +166,7 @@ public class GlobalUnion {
                         
                         if (anioCompatible) {
                             if (esMatchInteligente(steamGame, rawgGame)) {
-                                JsonNode finalGame = fusionarJuegos(steamGame, rawgGame, mapper);
+                                JsonNode finalGame = fusionarJuegos(steamGame, rawgGame, mapper, conflictWriter);
                                 String key = normalizeTitle(steamGame.path("titulo").asText());
                                 steamGamesByTitle.put(key, finalGame);
                                 ((ObjectNode)steamGame).put("_merged", true); 
@@ -341,7 +341,7 @@ public class GlobalUnion {
         return 0;
     }
 
-    private static JsonNode fusionarJuegos(JsonNode steamGame, JsonNode rawgGame, ObjectMapper mapper) {
+    private static JsonNode fusionarJuegos(JsonNode steamGame, JsonNode rawgGame, ObjectMapper mapper, PrintWriter conflictWriter) {
         ObjectNode base = (ObjectNode) steamGame.deepCopy();
         
         String fechaSteam = base.path("fecha_lanzamiento").asText("");
@@ -355,6 +355,19 @@ public class GlobalUnion {
         int steamMetacritic = base.path("metacritic").asInt(0);
         int rawgMetacritic = rawgGame.path("metacritic").asInt(0);
         if (rawgMetacritic > steamMetacritic) base.put("metacritic", rawgMetacritic);
+        
+        // --- GESTIÓN DE EDAD RECOMENDADA ---
+        int edadSteam = base.path("edad_recomendada").asInt(0);
+        int edadRawg = rawgGame.path("edad_recomendada").asInt(0);
+        
+        // Prevalece Steam, pero si Steam es 0 y RAWG tiene dato, usamos RAWG
+        if (edadSteam == 0 && edadRawg > 0) {
+            base.put("edad_recomendada", edadRawg);
+        } else if (edadSteam > 0 && edadRawg > 0 && edadSteam != edadRawg) {
+            // Conflicto: Reportamos pero mantenemos Steam
+            conflictWriter.println("⚠️ CONFLICTO EDAD: '" + base.path("titulo").asText() + 
+                                 "' -> Steam: " + edadSteam + " | RAWG: " + edadRawg + " (Se mantiene Steam)");
+        }
 
         fusionarArray(base, rawgGame, "plataformas");
         fusionarArray(base, rawgGame, "generos");

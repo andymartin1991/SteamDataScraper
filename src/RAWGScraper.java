@@ -149,6 +149,9 @@ public class RAWGScraper {
             if (descripcionCorta.isEmpty()) {
                 return null;
             }
+            
+            // NUEVO: Extracción de Edad Recomendada (ESRB Normalizado)
+            int requiredAge = extraerEdadRecomendada(jsonBasic);
 
             StringBuilder sb = new StringBuilder();
             sb.append("  {\n");
@@ -177,6 +180,7 @@ public class RAWGScraper {
             sb.append("    },\n");
             
             sb.append("    \"metacritic\": ").append(metacritic).append(",\n");
+            sb.append("    \"edad_recomendada\": ").append(requiredAge).append(",\n");
             sb.append("    \"tiendas\": ").append(tiendasJson).append("\n");
             sb.append("  }");
             
@@ -243,6 +247,33 @@ public class RAWGScraper {
             return Integer.parseInt(meta);
         } catch (NumberFormatException e) {
             return 0;
+        }
+    }
+    
+    private static int extraerEdadRecomendada(String json) {
+        // Buscamos el objeto "esrb_rating": { "id": X, "slug": "Y" ... }
+        String searchKey = "\"esrb_rating\":";
+        int startIdx = json.indexOf(searchKey);
+        if (startIdx == -1) return 0;
+        
+        int startObj = json.indexOf("{", startIdx);
+        int endObj = json.indexOf("}", startObj);
+        if (startObj == -1 || endObj == -1) return 0;
+        
+        String esrbContent = json.substring(startObj, endObj + 1);
+        String slug = extraerValorJsonManual(esrbContent, "slug");
+        
+        if (slug == null) return 0;
+        
+        // NORMALIZACIÓN A ESTÁNDAR PEGI/ESRB (0, 3, 7, 12, 16, 18)
+        switch (slug.toLowerCase()) {
+            case "everyone": return 0;
+            case "everyone-10-plus": return 7; // 10 -> 7 (PEGI)
+            case "teen": return 12; // 13 -> 12 (PEGI)
+            case "mature": return 16; // 17 -> 16 (PEGI)
+            case "adults-only": return 18;
+            case "rating-pending": return 0;
+            default: return 0;
         }
     }
     

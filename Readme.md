@@ -40,12 +40,14 @@ Transforman los datos crudos de SQLite a JSON limpio y normalizado.
     *   **Novedades:**
         *   🎬 **Extracción de Videos:** Obtiene trailers en MP4/WebM (480p/Max).
         *   🏢 **Metadatos:** Extrae Desarrolladores y Editores.
+        *   🔞 **Edad Recomendada:** Prioriza el sistema **PEGI** europeo. Si no existe, busca ESRB y lo normaliza. Como último recurso, usa el máximo global.
     *   **Limpieza:** Normaliza títulos, extrae requisitos, idiomas y detecta tipo (Juego/DLC).
 
 *   **`RAWGScraper`**:
     *   Genera: `rawg_games.json.gz`.
     *   **Robustez:** Implementa *fallback* al detalle si faltan datos (devs/publishers) en la lista básica.
     *   **Tiendas:** Construye enlaces a tiendas de consola (PS Store, Xbox, Nintendo).
+    *   🔞 **Edad Recomendada:** Mapea la clasificación ESRB a los estándares PEGI (ej. Everyone 10+ -> 7, Teen -> 12).
 
 *   **`RAWGUpcomingScraper` (NUEVO)**:
     *   Genera: `rawg_proximos_games.json.gz`.
@@ -53,12 +55,14 @@ Transforman los datos crudos de SQLite a JSON limpio y normalizado.
     *   **Filtros:**
         *   **Fecha:** Solo incluye juegos con fecha de lanzamiento futura o marcados como "TBA".
         *   **Plataforma:** Descarta juegos que son **exclusivos de PC**.
+    *   **Datos:** Incluye normalización de edad recomendada (ESRB -> PEGI).
 
 *   **`SteamUpcomingScraper` (NUEVO)**:
     *   Genera: `steam_proximos_games.json.gz`.
     *   **Propósito:** Crea una lista de próximos lanzamientos desde Steam.
     *   **Filtros:**
         *   **Fecha:** Solo incluye juegos con fecha de lanzamiento futura ("coming_soon": true).
+    *   **Datos:** Incluye normalización de edad recomendada (Prioridad PEGI).
 
 ### 4. Fusión Final (Union)
 *   **`GlobalUnion`**:
@@ -71,6 +75,7 @@ Transforman los datos crudos de SQLite a JSON limpio y normalizado.
     *   **Seguridad Estricta:** Nunca fusiona un **Juego** con un **DLC**, incluso si coinciden en título o desarrollador.
     *   **Prioridad de Datos:**
         *   *Base:* Steam (manda en videos, descripción, etc.).
+        *   *Edad Recomendada:* Prioriza Steam. Si Steam no tiene dato (0) y RAWG sí, usa RAWG. Reporta conflictos si difieren.
         *   *Listas:* Unión sin duplicados (Plataformas, Géneros, Devs, Editores).
         *   *Tiendas:* Añade tiendas de terceros (GOG, Epic) desde RAWG, pero bloquea duplicados de Steam.
 
@@ -161,6 +166,7 @@ Para generar la lista de próximos lanzamientos:
     "textos": ["English", "Spanish", "French"]
   },
   "metacritic": 96,
+  "edad_recomendada": 16,
   "tiendas": [
     {
       "tienda": "Steam",
