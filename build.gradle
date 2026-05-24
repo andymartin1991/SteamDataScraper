@@ -1,0 +1,110 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+group = 'com.steamscraper'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src']
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    implementation 'org.xerial:sqlite-jdbc:3.45.1.0' 
+    
+    // --- APACHE SPARK ---
+    implementation 'org.apache.spark:spark-core_2.13:3.5.0'
+    implementation 'org.apache.spark:spark-sql_2.13:3.5.0'
+    implementation 'org.apache.hadoop:hadoop-client:3.3.4' 
+}
+
+application {
+    mainClass = 'steam.SteamScraper'
+}
+
+// --- TAREAS DE RECOLECCIÓN ---
+tasks.register('runCollector', JavaExec) {
+    group = "1. Recolección"
+    description = "Ejecuta el SteamRawCollector con soporte SQLite"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('steam.SteamRawCollector')
+}
+
+tasks.register('runIgdbCollector', JavaExec) {
+    group = "1. Recolección"
+    description = "Ejecuta el IGDBRawCollector con soporte SQLite"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('IGDBRawCollector')
+}
+
+tasks.register('runRawgCollector', JavaExec) {
+    group = "1. Recolección"
+    description = "Ejecuta el RAWGRawCollector con soporte SQLite"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('rawg.RAWGRawCollector')
+}
+
+tasks.register('runRawgDetailCollector', JavaExec) {
+    group = "1. Recolección"
+    description = "Descarga los detalles (descripción, etc) de los juegos de RAWG"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('rawg.RAWGDetailCollector')
+}
+
+// --- TAREAS DE PROCESADO (SCRAPING) ---
+tasks.register('runScraper', JavaExec) {
+    group = "2. Procesado"
+    description = "Ejecuta el SteamScraper para procesar el JSON de Steam"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('steam.SteamScraper')
+}
+
+tasks.register('runRawgScraper', JavaExec) {
+    group = "2. Procesado"
+    description = "Ejecuta el RAWGScraper para procesar el JSON de RAWG"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('rawg.RAWGScraper')
+}
+
+// --- TAREA DE UNIFICACIÓN GLOBAL ---
+tasks.register('runGlobalUnion', JavaExec) {
+    group = "3. Unificación"
+    description = "Unifica los JSON de Steam y RAWG en un archivo global"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('union.GlobalUnion')
+}
+
+
+// -------------------------------------------------
+
+tasks.register('runJsonToParquet', JavaExec) {
+    group = "Application"
+    description = "Runs the JsonToParquet class with correct JVM args for Java 17+"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('JsonToParquet')
+    jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED', "-Djava.library.path=${project.projectDir}/bin"
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
+tasks.withType(JavaExec).configureEach {
+    workingDir = projectDir
+}
+

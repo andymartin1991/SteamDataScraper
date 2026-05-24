@@ -1,0 +1,58 @@
+# Archivos de sistema e IDE (IntelliJ / Android Studio)
+.idea/
+*.iml
+out/
+build/
+.gradle/
+local.properties
+
+# Configuración local / secretos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+gradle-local.properties
+
+# Carpeta bin para compatibilidad con Hadoop en Windows
+bin/
+
+# Archivos generados por el sistema operativo
+.DS_Store
+Thumbs.db
+
+# Archivos de datos temporales del Scraper
+# (Es mejor no subirlos para que quien descargue el codigo empiece limpio)
+progreso.txt
+lista_appids.txt
+
+# Archivos de base de datos SQLite
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db-journal
+
+# GZIP grandes: no versionar por defecto.
+# Única excepción permitida: próximos lanzamientos consumidos por la app.
+*.gz
+*.gz.*
+!/app_data/
+/app_data/*
+!/app_data/global_proximos_games.json.gz
+
+prebuilt_db/voxgamer_v7.db
+prebuilt_db/*.tmp
+
+# Datos/exports generados (muy grandes, GitHub bloquea >100MB)
+/data/exports/*.json.gz
+
+# Datos generados/caché (pueden ser grandes)
+/app_data/*
+!/app_data/global_proximos_games.json.gz
+
+# Backups locales (no versionar)
+/prebuilt_db/*_old.*

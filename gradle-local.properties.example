@@ -1,0 +1,6 @@
+# Copia este archivo como gradle-local.properties en tu entorno local.
+# gradle-local.properties está ignorado por Git: ahí sí puedes poner claves reales.
+
+steam.api.key=pon_aqui_tu_clave_steam
+rawg.api.keys=clave_rawg_1,clave_rawg_2
+
