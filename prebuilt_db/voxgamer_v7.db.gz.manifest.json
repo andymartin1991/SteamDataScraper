@@ -1,0 +1,13 @@
+{
+  "dbName": "voxgamer_v7.db",
+  "schemaVersion": 13,
+  "source": "global_games.json.gz",
+  "gzipFile": "voxgamer_v7.db.gz",
+  "parts": [
+    "voxgamer_v7.db.gz.part001",
+    "voxgamer_v7.db.gz.part002",
+    "voxgamer_v7.db.gz.part003"
+  ],
+  "partSizeMb": 90,
+  "createdAtUtc": "2026-05-04T06:47:24.665327Z"
+}
