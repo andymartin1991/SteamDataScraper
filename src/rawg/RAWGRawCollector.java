@@ -1,15 +1,19 @@
 package rawg;
 
-import common.ApiKeyConfig;
+import common.DataStoreException;
+import common.CollectorRunGuard;
+import common.CollectorRunGuard.JsonTarget;
+import common.CollectorRunGuard.RunSession;
+import common.ResilientHttpClient.RequestInterruptedException;
+import common.ReleaseDatePolicy;
+import common.ReleaseDateTrackingStore;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -26,46 +30,33 @@ import java.nio.file.Paths;
 
 public class RAWGRawCollector {
 
-    private static final String RAWG_API_KEYS_ENV = "RAWG_API_KEYS";
-    private static final String RAWG_API_KEYS_PROPERTY = "rawg.api.keys";
-    private static final String[] API_KEYS = ApiKeyConfig.getRequiredCsvValues(
-        RAWG_API_KEYS_PROPERTY,
-        RAWG_API_KEYS_ENV,
-        "las RAWG API keys"
-    );
-    private static int currentKeyIndex = 0;
-
-
-    private static String getApiKey() {
-        return API_KEYS[currentKeyIndex];
-    }
-
-    private static void rotateApiKey() {
-        currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-        System.out.println("🔄 Rotando API key... índice " + (currentKeyIndex + 1) + "/" + API_KEYS.length);
-    }
-
     private static final String DB_FILE = "data/db/rawg_raw.sqlite";
+    private static final RAWGApiClient API_CLIENT = new RAWGApiClient();
     
     private static final int UMBRAL_PARADA_TEMPRANA = 1000; 
 
     public static void main(String[] args) {
+        RunSession runSession = null;
         try {
             System.out.println("🚀 Iniciando RAWGRawCollector (MODO TOTAL: Todo el catálogo)...");
 
             try {
                 Class.forName("org.sqlite.JDBC");
             } catch (ClassNotFoundException e) {
-                System.err.println("❌ ERROR CRÍTICO: No se encontró el driver JDBC de SQLite.");
-                return;
+                throw new IllegalStateException("No se encontró el driver JDBC de SQLite", e);
             }
 
             ensureParentDir(DB_FILE);
             setupDatabase();
+            runSession = CollectorRunGuard.begin(
+                DB_FILE,
+                "RAWGRawCollector",
+                new JsonTarget("rawg_raw_data", "game_id", "json_data", "fecha_sync")
+            );
 
             Map<Integer, String> juegosYaProcesados = cargarJuegosYaProcesados();
             int totalEnBD = juegosYaProcesados.size();
-            System.out.println("📚 Base de datos: " + totalEnBD + " juegos ya registrados (excluyendo futuros/tba).");
+            System.out.println("📚 Base de datos: " + totalEnBD + " juegos ya registrados.");
             
             long totalApiEstimado = calcularTotalApi();
             if (totalApiEstimado > 0) {
@@ -80,8 +71,10 @@ public class RAWGRawCollector {
                 descargarRecientes(juegosYaProcesados);
             }
 
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("RAWGRawCollector finalizó con error", e);
+        } finally {
+            if (runSession != null) runSession.close();
         }
     }
 
@@ -106,7 +99,52 @@ public class RAWGRawCollector {
 
     // --- ESTRATEGIA 1: MANTENIMIENTO (Recientes) ---
     private static void descargarRecientes(Map<Integer, String> juegosProcesados) {
-        // ... (sin cambios)
+        int page = 1;
+        int sinCambiosConsecutivos = 0;
+        int guardados = 0;
+
+        System.out.println("🔄 Revisando juegos por fecha de actualización...");
+
+        while (sinCambiosConsecutivos < UMBRAL_PARADA_TEMPRANA) {
+            String urlString = "https://api.rawg.io/api/games?key=placeholder"
+                + "&ordering=-updated&page_size=40&page=" + page;
+            String jsonResponse = peticionHttpConReintentoInfinito(urlString);
+
+            if (jsonResponse == null) {
+                break;
+            }
+
+            String resultsArray = extraerArrayResults(jsonResponse);
+            if (resultsArray == null || resultsArray.isEmpty() || resultsArray.equals("[]")) {
+                break;
+            }
+
+            for (String juegoJson : separarObjetosJson(resultsArray)) {
+                if (procesarJuegoIndividual(juegoJson, juegosProcesados)) {
+                    guardados++;
+                    sinCambiosConsecutivos = 0;
+                } else {
+                    sinCambiosConsecutivos++;
+                }
+
+                if (sinCambiosConsecutivos >= UMBRAL_PARADA_TEMPRANA) {
+                    break;
+                }
+            }
+
+            System.out.printf("\r   -> Pág %d | Nuevos/actualizados: %d | Sin cambios seguidos: %d/%d",
+                page, guardados, sinCambiosConsecutivos, UMBRAL_PARADA_TEMPRANA);
+
+            if (!jsonResponse.contains("\"next\":\"http")) {
+                break;
+            }
+
+            page++;
+            sleepOrStop(1_000);
+        }
+
+        System.out.println();
+        System.out.println("✅ Mantenimiento RAWG finalizado. Nuevos/actualizados: " + guardados);
     }
 
     // --- ESTRATEGIA 2: LLENADO MASIVO (Por Decenas) ---
@@ -131,8 +169,7 @@ public class RAWGRawCollector {
                     int guardadosEnDecena = descargarPeriodoEspecifico(anio, mes, decena, juegosProcesados, progresoDecenal);
                     
                     if (guardadosEnDecena == -1) {
-                        System.out.println("🛑 Abortando proceso por error crítico.");
-                        return;
+                        throw new IllegalStateException("Error crítico procesando la decena " + decenaId);
                     }
                     
                     totalGuardadosSesion += guardadosEnDecena;
@@ -170,7 +207,7 @@ public class RAWGRawCollector {
 
         while (hayMasDatos) {
             try {
-                String urlString = "https://api.rawg.io/api/games?key=" + getApiKey() + 
+                String urlString = "https://api.rawg.io/api/games?key=placeholder" +
                                    "&dates=" + fechas + 
                                    "&ordering=-added" + 
                                    "&page_size=40&page=" + page;
@@ -196,9 +233,18 @@ public class RAWGRawCollector {
 
                 if (!jsonResponse.contains("\"next\":\"http")) hayMasDatos = false;
                 page++;
-                Thread.sleep(1000); 
+                sleepOrStop(1_000);
 
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
+                if (e instanceof RequestInterruptedException interrupted) {
+                    throw interrupted;
+                }
+                if (e instanceof DataStoreException persistenceFailure) {
+                    throw persistenceFailure;
+                }
+                if (e instanceof SecurityException securityException) {
+                    throw securityException;
+                }
                 System.err.println("❌ Error en " + decenaId + ": " + e.getMessage());
                 return -1; 
             }
@@ -256,15 +302,10 @@ public class RAWGRawCollector {
             fechaFin = yearMonth.atEndOfMonth().toString();
         }
         String fechas = fechaInicio + "," + fechaFin;
-        String urlString = "https://api.rawg.io/api/games?key=" + getApiKey() + "&dates=" + fechas + "&page_size=1";
+        String urlString = "https://api.rawg.io/api/games?key=placeholder&dates=" + fechas + "&page_size=1";
         
-        try {
-            String jsonResponse = peticionHttpConReintentoInfinito(urlString);
-            if (jsonResponse != null) {
-                return extraerCount(jsonResponse);
-            }
-        } catch (Exception e) {}
-        return 0;
+        String jsonResponse = peticionHttpConReintentoInfinito(urlString);
+        return jsonResponse == null ? 0 : extraerCount(jsonResponse);
     }
     
     private static String extraerArrayResults(String fullJson) {
@@ -338,9 +379,9 @@ public class RAWGRawCollector {
             stmt.execute("CREATE TABLE IF NOT EXISTS rawg_progress_decenal (" +
                          "decena_id TEXT PRIMARY KEY, " + // Formato "YYYY-MM-1", "YYYY-MM-2", "YYYY-MM-3"
                          "ultima_pagina INTEGER NOT NULL)");
-        } catch (Exception e) {
-            System.err.println("❌ Error fatal DB: " + e.getMessage());
-            System.exit(1);
+            ReleaseDateTrackingStore.ensureSchema(conn);
+        } catch (SQLException e) {
+            throw new DataStoreException("No se pudo configurar " + DB_FILE, e);
         }
     }
 
@@ -350,8 +391,8 @@ public class RAWGRawCollector {
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-        } catch (Exception e) {
-            throw new RuntimeException("No se pudo crear la carpeta para: " + filePath, e);
+        } catch (IOException e) {
+            throw new IllegalStateException("No se pudo crear la carpeta para: " + filePath, e);
         }
     }
 
@@ -363,7 +404,9 @@ public class RAWGRawCollector {
             while (rs.next()) {
                 progreso.put(rs.getString("decena_id"), rs.getInt("ultima_pagina"));
             }
-        } catch (Exception e) {}
+        } catch (SQLException e) {
+            throw new DataStoreException("No se pudo cargar el progreso decenal de RAWG", e);
+        }
         return progreso;
     }
 
@@ -374,8 +417,8 @@ public class RAWGRawCollector {
             pstmt.setString(1, decenaId);
             pstmt.setInt(2, pagina);
             pstmt.executeUpdate();
-        } catch (Exception e) {
-            System.err.println("⚠️ Error guardando progreso de la decena " + decenaId + ": " + e.getMessage());
+        } catch (SQLException e) {
+            throw new DataStoreException("No se pudo guardar el progreso de la decena " + decenaId, e);
         }
     }
 
@@ -390,122 +433,66 @@ public class RAWGRawCollector {
             while (rsGames.next()) {
                 int id = rsGames.getInt("game_id");
                 String json = rsGames.getString("json_data");
-                
-                // NUEVA LÓGICA: Si es fecha futura o TBA, NO lo añadimos al mapa.
-                // Esto forzará que el collector lo trate como "nuevo" y lo actualice si lo encuentra.
-                if (esFechaFuturaOTba(json)) {
-                    continue; 
-                }
-                
                 String fechaUpdate = extraerFechaUpdate(json);
                 if (fechaUpdate == null) fechaUpdate = "1970-01-01T00:00:00";
                 juegos.put(id, fechaUpdate);
             }
-        } catch (Exception e) {}
+        } catch (SQLException e) {
+            throw new DataStoreException("No se pudo cargar el catálogo RAWG ya procesado", e);
+        }
         return juegos;
     }
-    
-    // NUEVO MÉTODO DE VALIDACIÓN
-    private static boolean esFechaFuturaOTba(String json) {
-        try {
-            // 1. Check TBA
-            if (json.contains("\"tba\":true")) return true;
-            
-            // 2. Check Fecha Lanzamiento
-            Pattern p = Pattern.compile("\"released\":\"([^\"]+)\"");
-            Matcher m = p.matcher(json);
-            if (m.find()) {
-                String fechaStr = m.group(1);
-                if (fechaStr == null || fechaStr.equals("null")) return true; // Sin fecha definida = futuro potencial
-                
-                LocalDate fecha = LocalDate.parse(fechaStr);
-                if (fecha.isAfter(LocalDate.now())) return true;
-            } else {
-                // Si no tiene campo released, asumimos que falta info o es futuro
-                return true;
-            }
-        } catch (Exception e) {
-            // Ante la duda, re-procesar
-            return true;
-        }
-        return false;
-    }
-
     private static void guardarJuego(int gameId, String json) {
+        CollectorRunGuard.requireCompleteJson(json, "RAWG ID " + gameId);
         String sql = "INSERT OR REPLACE INTO rawg_raw_data(game_id, json_data) VALUES(?,?)";
         int intentos = 0;
         while (intentos < 3) {
-            try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE);
-                 PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                pstmt.setInt(1, gameId);
-                pstmt.setString(2, json);
-                pstmt.executeUpdate();
+            try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + DB_FILE)) {
+                conn.setAutoCommit(false);
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.setInt(1, gameId);
+                    pstmt.setString(2, json);
+                    pstmt.executeUpdate();
+                }
+                ReleaseDateTrackingStore.recordCollectorObservation(
+                    conn,
+                    gameId,
+                    ReleaseDatePolicy.fromRawg(json)
+                );
+                conn.commit();
                 return;
-            } catch (Exception e) {
-                if (e.getMessage().contains("locked")) {
+            } catch (SQLException e) {
+                if (isDatabaseLocked(e)) {
                     intentos++;
-                    try { Thread.sleep(100); } catch (InterruptedException ie) {}
+                    sleepOrStop(100);
                 } else {
-                    System.err.println("⚠️ Error guardando juego " + gameId + ": " + e.getMessage());
-                    return;
+                    throw new DataStoreException("No se pudo guardar el juego RAWG " + gameId, e);
                 }
             }
         }
+        throw new DataStoreException("La base de datos siguió bloqueada al guardar RAWG " + gameId, null);
+    }
+
+    private static boolean isDatabaseLocked(SQLException exception) {
+        String message = exception.getMessage();
+        return message != null && message.toLowerCase().contains("locked");
     }
     
     private static String peticionHttpConReintentoInfinito(String urlString) {
-        int intentos = 0;
-        
-        while (true) { 
-            try {
-                return peticionHttp(urlString);
-            } catch (Exception e) {
-                if (e.getMessage().contains("401")) {
-                    System.err.println("⚠️ Error 401 (Unauthorized). Rotando API Key...");
-                    rotateApiKey();
-                    // Reconstruimos la URL con la nueva clave
-                    urlString = urlString.replaceAll("key=[^&]+", "key=" + getApiKey());
-                    continue; // Reintentamos inmediatamente con la nueva clave
-                }
-                if (e.getMessage().contains("404")) {
-                    return null; 
-                }
-
-                intentos++;
-                System.err.println("⚠️ Error HTTP (Intento " + intentos + "): " + e.getMessage());
-                
-                if (e.getMessage().contains("502") || e.getMessage().contains("500") || e.getMessage().contains("504") || e.getMessage().contains("429")) {
-                    System.out.println("⏳ Servidor saturado o Rate Limit. Esperando 60s y reintentando...");
-                    try { Thread.sleep(60000); } catch (InterruptedException ie) {}
-                } else {
-                    System.out.println("⏳ Error de conexión. Esperando 10s...");
-                    try { Thread.sleep(10000); } catch (InterruptedException ie) {}
-                }
-            }
+        try {
+            return API_CLIENT.get(urlString);
+        } catch (common.ResilientHttpClient.HttpStatusException e) {
+            if (e.getStatusCode() == 404) return null;
+            throw e;
         }
     }
 
-    private static String peticionHttp(String urlString) throws Exception {
-        HttpURLConnection conn = null;
+    private static void sleepOrStop(long millis) {
         try {
-            conn = (HttpURLConnection) new URL(urlString).openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "SteamDataScraper/1.0");
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
-            int code = conn.getResponseCode();
-            if (code == 200) {
-                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
-                    StringBuilder content = new StringBuilder();
-                    String line;
-                    while ((line = in.readLine()) != null) content.append(line);
-                    return content.toString();
-                }
-            } else {
-                throw new Exception("HTTP Code " + code);
-            }
-        } finally {
-            if (conn != null) conn.disconnect();
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RequestInterruptedException("RAWGRawCollector interrumpido", e);
         }
     }
 }

@@ -240,8 +240,8 @@ public class GlobalUnion {
 
                 System.out.println("\n✅ Proceso completado.");
 
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("GlobalUnion finalizó con error", e);
         }
     }
 
@@ -251,8 +251,8 @@ public class GlobalUnion {
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-        } catch (Exception e) {
-            throw new RuntimeException("No se pudo crear la carpeta para: " + filePath, e);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("No se pudo crear la carpeta para: " + filePath, e);
         }
     }
     
@@ -324,7 +324,7 @@ public class GlobalUnion {
         writer.println("ℹ️ " + tipo + ": Steam='" + tituloSteam + "' | RAWG='" + tituloRawg + "'");
     }
 
-    private static Map<String, JsonNode> loadGamesToMapByTitle(String filePath, ObjectMapper mapper) throws Exception {
+    private static Map<String, JsonNode> loadGamesToMapByTitle(String filePath, ObjectMapper mapper) throws java.io.IOException {
         Map<String, JsonNode> gameMap = new HashMap<>();
         JsonFactory factory = mapper.getFactory();
         try (InputStream is = new GZIPInputStream(new FileInputStream(filePath));
@@ -380,7 +380,9 @@ public class GlobalUnion {
         if (fecha == null || fecha.isEmpty() || fecha.equals("TBA")) return 0;
         try {
             if (fecha.length() >= 4) return Integer.parseInt(fecha.substring(0, 4));
-        } catch (Exception e) {}
+        } catch (NumberFormatException e) {
+            return 0;
+        }
         return 0;
     }
 

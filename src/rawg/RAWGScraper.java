@@ -1,6 +1,9 @@
 package rawg;
 
+import common.ProcessingDiagnostics;
+
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.net.URLEncoder;
@@ -11,6 +14,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -43,7 +47,7 @@ public class RAWGScraper {
                     stmt.setFetchSize(1000); 
                     
                     // JOIN para obtener datos básicos, detalles y stores
-                    String sql = "SELECT r.json_data as json_basic, d.json_full as json_detail, d.json_stores " +
+                    String sql = "SELECT r.game_id, r.json_data as json_basic, d.json_full as json_detail, d.json_stores " +
                                  "FROM rawg_raw_data r " +
                                  "LEFT JOIN rawg_details_data d ON r.game_id = d.game_id";
                                  
@@ -51,14 +55,17 @@ public class RAWGScraper {
                     
                     int procesados = 0;
                     int exportados = 0;
+                    ProcessingDiagnostics diagnostics = new ProcessingDiagnostics();
                     boolean primero = true;
 
                     while (rs.next()) {
+                        int gameId = rs.getInt("game_id");
                         String jsonBasic = rs.getString("json_basic");
                         String jsonDetail = rs.getString("json_detail"); // Puede ser null
                         String jsonStores = rs.getString("json_stores"); // Puede ser null
                         
-                        String jsonProcesado = procesarJuego(jsonBasic, jsonDetail, jsonStores);
+                        String jsonProcesado = procesarJuego(
+                            gameId, jsonBasic, jsonDetail, jsonStores, diagnostics);
                         
                         if (jsonProcesado != null) {
                             if (!primero) {
@@ -78,12 +85,13 @@ public class RAWGScraper {
                     System.out.println("\n✅ Exportación finalizada.");
                     System.out.println("   -> Total leídos: " + procesados);
                     System.out.println("   -> Total exportados: " + exportados);
+                    diagnostics.printSummary();
                     System.out.println("   -> Archivo de salida: " + OUTPUT_FILE);
                 }
             }
             
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (ClassNotFoundException | IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("RAWGScraper finalizó con error", e);
         }
     }
 
@@ -93,27 +101,41 @@ public class RAWGScraper {
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-        } catch (Exception e) {
-            throw new RuntimeException("No se pudo crear la carpeta para: " + filePath, e);
+        } catch (IOException e) {
+            throw new IllegalStateException("No se pudo crear la carpeta para: " + filePath, e);
         }
     }
 
-    private static String procesarJuego(String jsonBasic, String jsonDetail, String jsonStores) {
+    private static String procesarJuego(
+        int gameId,
+        String jsonBasic,
+        String jsonDetail,
+        String jsonStores,
+        ProcessingDiagnostics diagnostics
+    ) {
         try {
-            // Filtro 1: Descartar juegos "To Be Announced"
-            if (jsonBasic.contains("\"tba\":true")) return null;
+            // El detalle puede haber sido refrescado por RAWGReleaseDateUpdater.
+            if (esTbaEfectivo(jsonBasic, jsonDetail)) {
+                diagnostics.skipped("TBA");
+                return null;
+            }
             
-            String fechaStr = extraerValorJsonManual(jsonBasic, "released");
-            if (fechaStr == null || fechaStr.isEmpty()) return null;
+            String fechaStr = obtenerFechaEfectiva(jsonBasic, jsonDetail);
+            if (fechaStr == null || fechaStr.isEmpty()) {
+                diagnostics.skipped("fecha ausente");
+                return null;
+            }
 
             // Filtro 2: Descartar juegos con fecha de lanzamiento futura
             try {
                 LocalDate fechaLanzamiento = LocalDate.parse(fechaStr, DateTimeFormatter.ISO_LOCAL_DATE);
                 if (fechaLanzamiento.isAfter(LocalDate.now())) {
+                    diagnostics.skipped("fecha futura");
                     return null; // El juego es un próximo lanzamiento, lo descartamos
                 }
-            } catch (Exception e) {
+            } catch (DateTimeParseException e) {
                 // Si la fecha tiene un formato raro, lo descartamos por seguridad
+                diagnostics.skipped("fecha inválida");
                 return null;
             }
 
@@ -162,6 +184,7 @@ public class RAWGScraper {
             
             // Filtro 3: Si no hay descripción, NO exportamos el juego (esperamos a que el Collector la consiga)
             if (descripcionCorta.isEmpty()) {
+                diagnostics.skipped("sin descripción");
                 return null;
             }
             
@@ -201,7 +224,8 @@ public class RAWGScraper {
             
             return sb.toString();
 
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
+            diagnostics.error("RAWG ID " + gameId, e);
             return null;
         }
     }
@@ -467,19 +491,15 @@ public class RAWGScraper {
     
     private static String generarUrlBusqueda(String storeSlug, String gameTitle) {
         if (gameTitle == null) return "";
-        try {
-            String query = URLEncoder.encode(gameTitle, StandardCharsets.UTF_8.toString());
-            switch (storeSlug.toLowerCase()) {
-                case "playstation-store": return "https://store.playstation.com/search/" + query;
-                case "xbox-store": return "https://www.xbox.com/search?q=" + query;
-                case "nintendo": return "https://www.nintendo.com/search/?q=" + query;
-                case "steam": return "https://store.steampowered.com/search/?term=" + query;
-                case "epic-games": return "https://store.epicgames.com/browse?q=" + query;
-                case "gog": return "https://www.gog.com/en/games?query=" + query;
-                default: return ""; 
-            }
-        } catch (Exception e) {
-            return "";
+        String query = URLEncoder.encode(gameTitle, StandardCharsets.UTF_8);
+        switch (storeSlug.toLowerCase()) {
+            case "playstation-store": return "https://store.playstation.com/search/" + query;
+            case "xbox-store": return "https://www.xbox.com/search?q=" + query;
+            case "nintendo": return "https://www.nintendo.com/search/?q=" + query;
+            case "steam": return "https://store.steampowered.com/search/?term=" + query;
+            case "epic-games": return "https://store.epicgames.com/browse?q=" + query;
+            case "gog": return "https://www.gog.com/en/games?query=" + query;
+            default: return "";
         }
     }
 
@@ -527,6 +547,21 @@ public class RAWGScraper {
             }
         }
         return null;
+    }
+
+    private static String obtenerFechaEfectiva(String jsonBasic, String jsonDetail) {
+        if (jsonDetail != null && !jsonDetail.isEmpty()) {
+            String fechaDetalle = extraerValorJsonManual(jsonDetail, "released");
+            if (fechaDetalle != null && !fechaDetalle.isEmpty()) return fechaDetalle;
+        }
+        return extraerValorJsonManual(jsonBasic, "released");
+    }
+
+    private static boolean esTbaEfectivo(String jsonBasic, String jsonDetail) {
+        if (jsonDetail != null && jsonDetail.contains("\"tba\":")) {
+            return jsonDetail.contains("\"tba\":true");
+        }
+        return jsonBasic.contains("\"tba\":true");
     }
 
     private static String limpiarTexto(String t) {

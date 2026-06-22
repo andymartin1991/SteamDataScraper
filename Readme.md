@@ -17,6 +17,19 @@ Este proyecto es el backend de recolección y procesamiento de datos para la apl
     *   Fusión inteligente de metadatos (géneros, tiendas, idiomas, etc.).
 *   **Formato Optimizado:** Exporta en **JSON Lines (NDJSON)** comprimido en GZIP para máxima eficiencia.
 *   **Generador SQLite:** Crea un archivo `.sqlite` final con índices y tablas optimizadas, listo para la app.
+*   **Reconexión Automática:** Los colectores de Steam y RAWG permanecen activos ante caídas de red, VPN, timeouts, rate limits y errores temporales del servidor.
+*   **Recuperación tras cierres abruptos:** Cada escritor registra su ejecución. Si el proceso o el equipo se apagan inesperadamente, el siguiente arranque comprueba WAL, integridad SQLite y los JSON escritos antes de continuar.
+*   **Diagnóstico de Exportación:** Cada scraper resume los elementos descartados por filtro y diferencia esos descartes de los errores reales de procesamiento.
+
+### Política de reconexión
+
+* Las desconexiones y timeouts se reintentan indefinidamente, con espera progresiva de 5 a 30 segundos.
+* Los códigos `408`, `425` y `5xx` se reintentan indefinidamente; se respeta la cabecera `Retry-After` cuando existe.
+* En Steam, los `429` también se reintentan respetando `Retry-After`.
+* En RAWG, un `429` rota inmediatamente a la siguiente API key. Si todas devuelven `401` o `429`, el proceso termina para esperar a la renovación de cuota mensual.
+* Al recuperar la conexión se informa en consola y la petición pendiente continúa, sin saltar el juego o la página.
+* Los errores permanentes (`400`, `401`, `403`, `404`, etc.) no se reintentan como si fueran una caída. RAWG rota las claves ante un `401` y detiene el proceso si todas son rechazadas.
+* Dos instancias del mismo collector no pueden escribir simultáneamente sobre la misma base. Un cierre limpio evita comprobaciones profundas innecesarias en el siguiente arranque.
 
 ---
 
@@ -25,9 +38,11 @@ Este proyecto es el backend de recolección y procesamiento de datos para la apl
 ### 1. Recolección (Collectors)
 Estos scripts descargan los datos crudos de las APIs y los guardan en bases de datos intermedias (`data/db/steam_raw.sqlite`, `data/db/rawg_raw.sqlite`).
 
-*   **`SteamRawCollector`**: Descarga el catálogo completo de Steam. Revisa automáticamente juegos "Coming Soon" o con fechas futuras.
+*   **`SteamRawCollector`**: Descarga el catálogo de Steam y solo consulta IDs nuevos.
 *   **`RAWGRawCollector`**: Descarga el catálogo de RAWG por décadas.
-*   **`RAWGDetailCollector`**: Descarga detalles profundos (descripción, tiendas) de RAWG. Incluye sistema de **cooldowns** (7 días para futuros, 10 días para errores) para ahorrar API.
+    Cuando la carga masiva ya está completa, revisa por fecha de actualización hasta encontrar 1.000 juegos consecutivos sin cambios.
+*   **`RAWGDetailCollector`**: Descarga detalles profundos (descripción, tiendas) de RAWG y deja la revisión de fechas al proceso dedicado.
+*   **`SteamReleaseDateUpdater` / `RAWGReleaseDateUpdater`**: Revisan exclusivamente juegos sin fecha, TBA o futuros con esperas progresivas, sin recargar ese trabajo en los collectors principales.
 
 ### 2. Procesamiento (Scrapers)
 Estos scripts leen las bases de datos crudas y generan archivos JSON intermedios limpios.
@@ -51,7 +66,7 @@ La generación de `prebuilt_db/` se realiza con **otro proceso externo** a este 
 ## 📦 Cómo Ejecutar
 
 ### Requisitos
-*   Java 17 o superior.
+*   JDK 17 para ejecutar Gradle. El wrapper actual no es compatible con el JDK 25.
 *   Conexión a Internet.
 *   Claves de API configuradas fuera del código fuente.
 
@@ -93,13 +108,16 @@ O pasarlas al proceso Java con `-Dsteam.api.key=...` y `-Drawg.api.keys=clave1,c
     ./gradlew runCollector          # Steam
     ./gradlew runRawgCollector      # RAWG (Lista)
     ./gradlew runRawgDetailCollector # RAWG (Detalles)
+    ./gradlew runSteamReleaseDateUpdater # Steam (Fechas pendientes)
+    ./gradlew runRawgReleaseDateUpdater  # RAWG (Fechas pendientes)
     ```
 
 2.  **Procesamiento a JSON:**
     ```bash
     ./gradlew runScraper            # Steam Lanzados
     ./gradlew runRawgScraper        # RAWG Lanzados
-    # (Los Upcoming se ejecutan cambiando la clase main o creando tarea nueva si es necesario)
+    ./gradlew runSteamUpcomingScraper # Steam Próximos
+    ./gradlew runRawgUpcomingScraper  # RAWG Próximos
     ```
 
 3.  **Fusión Global:**

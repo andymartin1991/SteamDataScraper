@@ -1,15 +1,21 @@
 package steam;
 
+import common.DataStoreException;
+import common.ProcessingDiagnostics;
+
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -35,8 +41,7 @@ public class SteamUpcomingScraper {
             try {
                 Class.forName("org.sqlite.JDBC");
             } catch (ClassNotFoundException e) {
-                System.err.println("❌ ERROR: No se encontró el driver JDBC de SQLite.");
-                return;
+                throw new IllegalStateException("No se encontró el driver JDBC de SQLite", e);
             }
 
             ensureParentDir(DB_FILE);
@@ -58,6 +63,7 @@ public class SteamUpcomingScraper {
                     
                     int procesados = 0;
                     int exportados = 0;
+                    ProcessingDiagnostics diagnostics = new ProcessingDiagnostics();
                     boolean primero = true;
 
                     while (rs.next()) {
@@ -65,7 +71,8 @@ public class SteamUpcomingScraper {
                         String jsonCrudo = rs.getString("json_data");
                         
                         // Pasamos el set de conflictivos para decidir si renombrar
-                        String jsonProcesado = procesarJuego(appId, jsonCrudo, idsConflictivos.contains(appId));
+                        String jsonProcesado = procesarJuego(
+                            appId, jsonCrudo, idsConflictivos.contains(appId), diagnostics);
                         
                         if (jsonProcesado != null) {
                             if (!primero) {
@@ -85,12 +92,13 @@ public class SteamUpcomingScraper {
                     System.out.println("\n✅ Exportación finalizada.");
                     System.out.println("   -> Total leídos: " + procesados);
                     System.out.println("   -> Total exportados: " + exportados);
+                    diagnostics.printSummary();
                     System.out.println("   -> Archivo de salida: " + OUTPUT_FILE);
                 }
             }
             
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (IOException | SQLException e) {
+            throw new IllegalStateException("SteamUpcomingScraper finalizó con error", e);
         }
     }
 
@@ -100,8 +108,8 @@ public class SteamUpcomingScraper {
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-        } catch (Exception e) {
-            throw new RuntimeException("No se pudo crear la carpeta para: " + filePath, e);
+        } catch (IOException e) {
+            throw new IllegalStateException("No se pudo crear la carpeta para: " + filePath, e);
         }
     }
     
@@ -136,20 +144,30 @@ public class SteamUpcomingScraper {
                 }
             }
             
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (SQLException e) {
+            throw new DataStoreException("No se pudieron detectar los IDs Steam Upcoming conflictivos", e);
         }
         return conflictivos;
     }
 
-    private static String procesarJuego(int appId, String json, boolean esConflictivo) {
+    private static String procesarJuego(
+        int appId,
+        String json,
+        boolean esConflictivo,
+        ProcessingDiagnostics diagnostics
+    ) {
         try {
             // FILTRO PRINCIPAL: Solo juegos que AÚN NO han salido
-            if (!esComingSoon(json)) return null;
+            if (!esComingSoon(json)) {
+                diagnostics.skipped("ya lanzado");
+                return null;
+            }
 
             String tipo = extraerValorJsonManual(json, "type");
-            if (tipo == null) return null;
-            if (!tipo.equals("game") && !tipo.equals("dlc")) return null; 
+            if (tipo == null || (!tipo.equals("game") && !tipo.equals("dlc"))) {
+                diagnostics.skipped("tipo no admitido");
+                return null;
+            }
             
             String fecha = extraerFechaISO(json); 
             // Nota: En coming soon, la fecha puede ser null o "TBA", lo cual es aceptable aquí.
@@ -222,7 +240,8 @@ public class SteamUpcomingScraper {
             
             return sb.toString();
 
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
+            diagnostics.error("Steam Upcoming AppID " + appId, e);
             return null;
         }
     }
@@ -240,7 +259,9 @@ public class SteamUpcomingScraper {
                 if (date.isAfter(LocalDate.now())) {
                     return true;
                 }
-            } catch (Exception e) {}
+            } catch (DateTimeParseException e) {
+                return false;
+            }
         }
         
         return false;
@@ -265,24 +286,20 @@ public class SteamUpcomingScraper {
     private static String extraerFechaISO(String json) {
         String rawDate = extraerValorJsonManual(json, "date");
         if (rawDate == null || rawDate.contains("TBA") || rawDate.trim().isEmpty()) return null;
-        try {
-            String[] parts = rawDate.replace(",", "").split(" ");
-            if (parts.length < 3) return null; 
-            String mesStr = parts[0].substring(0, 3).toLowerCase();
-            String dia = parts[1];
-            String anio = parts[2];
-            if (dia.length() == 1) dia = "0" + dia;
-            String mes = switch (mesStr) {
-                case "jan" -> "01"; case "feb" -> "02"; case "mar" -> "03";
-                case "apr" -> "04"; case "may" -> "05"; case "jun" -> "06";
-                case "jul" -> "07"; case "aug" -> "08"; case "sep" -> "09";
-                case "oct" -> "10"; case "nov" -> "11"; case "dec" -> "12";
-                default -> "01";
-            };
-            return anio + "-" + mes + "-" + dia;
-        } catch (Exception e) {
-            return null; 
-        }
+        String[] parts = rawDate.replace(",", "").trim().split("\\s+");
+        if (parts.length < 3 || parts[0].length() < 3) return null;
+        String mesStr = parts[0].substring(0, 3).toLowerCase();
+        String dia = parts[1];
+        String anio = parts[2];
+        if (dia.length() == 1) dia = "0" + dia;
+        String mes = switch (mesStr) {
+            case "jan" -> "01"; case "feb" -> "02"; case "mar" -> "03";
+            case "apr" -> "04"; case "may" -> "05"; case "jun" -> "06";
+            case "jul" -> "07"; case "aug" -> "08"; case "sep" -> "09";
+            case "oct" -> "10"; case "nov" -> "11"; case "dec" -> "12";
+            default -> null;
+        };
+        return mes == null ? null : anio + "-" + mes + "-" + dia;
     }
 
     private static String extraerDescripcionCorta(String json) {
@@ -414,13 +431,9 @@ public class SteamUpcomingScraper {
     }
     
     private static int extraerMetacritic(String json) {
-        try {
-            Pattern p = Pattern.compile("\"metacritic\":\\s*\\{\\s*\"score\":\\s*(\\d+)");
-            Matcher m = p.matcher(json);
-            if (m.find()) {
-                return Integer.parseInt(m.group(1));
-            }
-        } catch (Exception e) {}
+        Pattern p = Pattern.compile("\"metacritic\":\\s*\\{\\s*\"score\":\\s*(\\d+)");
+        Matcher m = p.matcher(json);
+        if (m.find()) return parseIntOrDefault(m.group(1), 0);
         return 0;
     }
     
@@ -443,16 +456,12 @@ public class SteamUpcomingScraper {
         
         // 3. Fallback: Máximo global (lo que teníamos antes)
         int maxAge = 0;
-        try {
-            Pattern p = Pattern.compile("\"required_age\":\\s*\"?(\\d+)\"?");
-            Matcher m = p.matcher(json);
-            while (m.find()) {
-                try {
-                    int age = Integer.parseInt(m.group(1));
-                    if (age > maxAge) maxAge = age;
-                } catch (NumberFormatException e) {}
-            }
-        } catch (Exception e) {}
+        Pattern p = Pattern.compile("\"required_age\":\\s*\"?(\\d+)\"?");
+        Matcher m = p.matcher(json);
+        while (m.find()) {
+            int age = parseIntOrDefault(m.group(1), 0);
+            if (age > maxAge) maxAge = age;
+        }
         
         // Normalización final del fallback
         if (maxAge <= 0) return 0;
@@ -467,48 +476,50 @@ public class SteamUpcomingScraper {
     }
     
     private static int buscarRatingEspecifico(String json, String sistema) {
-        try {
-            // Buscamos el bloque del sistema: "pegi": { ... }
-            int idxSystem = json.indexOf("\"" + sistema + "\":");
-            if (idxSystem == -1) return 0;
+        // Buscamos el bloque del sistema: "pegi": { ... }
+        int idxSystem = json.indexOf("\"" + sistema + "\":");
+        if (idxSystem == -1) return 0;
             
             // Buscamos el cierre del objeto para limitar la búsqueda
-            int idxEnd = json.indexOf("}", idxSystem);
-            if (idxEnd == -1) return 0;
+        int idxEnd = json.indexOf("}", idxSystem);
+        if (idxEnd == -1) return 0;
             
-            String block = json.substring(idxSystem, idxEnd);
+        String block = json.substring(idxSystem, idxEnd);
             
             // Buscamos "rating": "X" dentro del bloque
             Pattern p = Pattern.compile("\"rating\":\\s*\"?([a-zA-Z0-9]+)\"?");
-            Matcher m = p.matcher(block);
-            if (m.find()) {
-                String val = m.group(1).toLowerCase();
+        Matcher m = p.matcher(block);
+        if (m.find()) {
+            String val = m.group(1).toLowerCase();
                 
                 // Parsear valores numéricos directos (PEGI suele ser "3", "7", etc.)
-                if (val.matches("\\d+")) {
-                    return Integer.parseInt(val);
-                }
+            if (val.matches("\\d+")) return parseIntOrDefault(val, 0);
                 
                 // Parsear códigos de ESRB (e, e10, t, m, ao)
-                if (sistema.equals("esrb")) {
-                    if (val.equals("e")) return 0;
-                    if (val.equals("e10")) return 10;
-                    if (val.equals("t")) return 13;
-                    if (val.equals("m")) return 17;
-                    if (val.equals("ao")) return 18;
-                }
+            if (sistema.equals("esrb")) {
+                if (val.equals("e")) return 0;
+                if (val.equals("e10")) return 10;
+                if (val.equals("t")) return 13;
+                if (val.equals("m")) return 17;
+                if (val.equals("ao")) return 18;
             }
-        } catch (Exception e) {}
+        }
         return 0;
     }
     
     private static String extraerTamano(String json) {
-        try {
-            Pattern pSection = Pattern.compile("(Storage|Hard Drive):.*?(\\d+\\.?\\d*)\\s*(GB|MB)");
-            Matcher m = pSection.matcher(json);
-            if (m.find()) return m.group(2) + " " + m.group(3);
-        } catch (Exception e) {}
+        Pattern pSection = Pattern.compile("(Storage|Hard Drive):.*?(\\d+\\.?\\d*)\\s*(GB|MB)");
+        Matcher m = pSection.matcher(json);
+        if (m.find()) return m.group(2) + " " + m.group(3);
         return "N/A";
+    }
+
+    private static int parseIntOrDefault(String value, int fallback) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private static Map<String, List<String>> procesarIdiomas(String json) {

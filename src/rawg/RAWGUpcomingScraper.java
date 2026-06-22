@@ -1,6 +1,9 @@
 package rawg;
 
+import common.ProcessingDiagnostics;
+
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.net.URLEncoder;
@@ -11,6 +14,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -43,7 +47,7 @@ public class RAWGUpcomingScraper {
                     
                     stmt.setFetchSize(1000); 
                     
-                    String sql = "SELECT r.json_data as json_basic, d.json_full as json_detail, d.json_stores " +
+                    String sql = "SELECT r.game_id, r.json_data as json_basic, d.json_full as json_detail, d.json_stores " +
                                  "FROM rawg_raw_data r " +
                                  "LEFT JOIN rawg_details_data d ON r.game_id = d.game_id";
                                  
@@ -51,14 +55,17 @@ public class RAWGUpcomingScraper {
                     
                     int procesados = 0;
                     int exportados = 0;
+                    ProcessingDiagnostics diagnostics = new ProcessingDiagnostics();
                     boolean primero = true;
 
                     while (rs.next()) {
+                        int gameId = rs.getInt("game_id");
                         String jsonBasic = rs.getString("json_basic");
                         String jsonDetail = rs.getString("json_detail");
                         String jsonStores = rs.getString("json_stores");
                         
-                        String jsonProcesado = procesarJuego(jsonBasic, jsonDetail, jsonStores);
+                        String jsonProcesado = procesarJuego(
+                            gameId, jsonBasic, jsonDetail, jsonStores, diagnostics);
                         
                         if (jsonProcesado != null) {
                             if (!primero) {
@@ -78,12 +85,13 @@ public class RAWGUpcomingScraper {
                     System.out.println("\n✅ Exportación finalizada.");
                     System.out.println("   -> Total leídos: " + procesados);
                     System.out.println("   -> Total exportados: " + exportados);
+                    diagnostics.printSummary();
                     System.out.println("   -> Archivo de salida: " + OUTPUT_FILE);
                 }
             }
             
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (ClassNotFoundException | IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("RAWGUpcomingScraper finalizó con error", e);
         }
     }
 
@@ -93,26 +101,37 @@ public class RAWGUpcomingScraper {
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-        } catch (Exception e) {
-            throw new RuntimeException("No se pudo crear la carpeta para: " + filePath, e);
+        } catch (IOException e) {
+            throw new IllegalStateException("No se pudo crear la carpeta para: " + filePath, e);
         }
     }
 
-    private static String procesarJuego(String jsonBasic, String jsonDetail, String jsonStores) {
+    private static String procesarJuego(
+        int gameId,
+        String jsonBasic,
+        String jsonDetail,
+        String jsonStores,
+        ProcessingDiagnostics diagnostics
+    ) {
         try {
             // --- FILTRO 1: FECHA DE LANZAMIENTO ---
-            String fechaStr = extraerValorJsonManual(jsonBasic, "released");
-            boolean esTBA = jsonBasic.contains("\"tba\":true");
+            String fechaStr = obtenerFechaEfectiva(jsonBasic, jsonDetail);
+            boolean esTBA = esTbaEfectivo(jsonBasic, jsonDetail);
 
             if (fechaStr == null || fechaStr.isEmpty()) {
-                if (!esTBA) return null; // Si no tiene fecha y no es TBA, fuera.
+                if (!esTBA) {
+                    diagnostics.skipped("fecha ausente");
+                    return null;
+                }
             } else {
                 try {
                     LocalDate fechaLanzamiento = LocalDate.parse(fechaStr, DateTimeFormatter.ISO_LOCAL_DATE);
                     if (fechaLanzamiento.isBefore(LocalDate.now().plusDays(1))) {
+                        diagnostics.skipped("ya lanzado");
                         return null; // Si ya ha salido, fuera.
                     }
-                } catch (Exception e) {
+                } catch (DateTimeParseException e) {
+                    diagnostics.skipped("fecha inválida");
                     return null; // Fecha con formato raro, fuera.
                 }
             }
@@ -127,6 +146,7 @@ public class RAWGUpcomingScraper {
                 }
             }
             if (!tieneConsola) {
+                diagnostics.skipped("solo PC");
                 return null; // Si no tiene consola (es solo PC), fuera.
             }
 
@@ -201,7 +221,8 @@ public class RAWGUpcomingScraper {
             
             return sb.toString();
 
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
+            diagnostics.error("RAWG Upcoming ID " + gameId, e);
             return null;
         }
     }
@@ -371,18 +392,16 @@ public class RAWGUpcomingScraper {
     
     private static String generarUrlBusqueda(String storeSlug, String gameTitle) {
         if (gameTitle == null) return "";
-        try {
-            String query = URLEncoder.encode(gameTitle, StandardCharsets.UTF_8.toString());
-            switch (storeSlug.toLowerCase()) {
-                case "playstation-store": return "https://store.playstation.com/search/" + query;
-                case "xbox-store": return "https://www.xbox.com/search?q=" + query;
-                case "nintendo": return "https://www.nintendo.com/search/?q=" + query;
-                case "steam": return "https://store.steampowered.com/search/?term=" + query;
-                case "epic-games": return "https://store.epicgames.com/browse?q=" + query;
-                case "gog": return "https://www.gog.com/en/games?query=" + query;
-                default: return ""; 
-            }
-        } catch (Exception e) { return ""; }
+        String query = URLEncoder.encode(gameTitle, StandardCharsets.UTF_8);
+        switch (storeSlug.toLowerCase()) {
+            case "playstation-store": return "https://store.playstation.com/search/" + query;
+            case "xbox-store": return "https://www.xbox.com/search?q=" + query;
+            case "nintendo": return "https://www.nintendo.com/search/?q=" + query;
+            case "steam": return "https://store.steampowered.com/search/?term=" + query;
+            case "epic-games": return "https://store.epicgames.com/browse?q=" + query;
+            case "gog": return "https://www.gog.com/en/games?query=" + query;
+            default: return "";
+        }
     }
 
     private static String getStoreNameFromUrl(String url) {
@@ -417,6 +436,21 @@ public class RAWGUpcomingScraper {
             if (valueEnd != -1) { String val = json.substring(valueStart, valueEnd).trim(); return val.equals("null") ? null : val; }
         }
         return null;
+    }
+
+    private static String obtenerFechaEfectiva(String jsonBasic, String jsonDetail) {
+        if (jsonDetail != null && !jsonDetail.isEmpty()) {
+            String fechaDetalle = extraerValorJsonManual(jsonDetail, "released");
+            if (fechaDetalle != null && !fechaDetalle.isEmpty()) return fechaDetalle;
+        }
+        return extraerValorJsonManual(jsonBasic, "released");
+    }
+
+    private static boolean esTbaEfectivo(String jsonBasic, String jsonDetail) {
+        if (jsonDetail != null && jsonDetail.contains("\"tba\":")) {
+            return jsonDetail.contains("\"tba\":true");
+        }
+        return jsonBasic.contains("\"tba\":true");
     }
 
     private static String limpiarTexto(String t) {

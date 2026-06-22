@@ -19,6 +19,12 @@ sourceSets {
     main {
         java {
             srcDirs = ['src']
+            exclude 'test/**'
+        }
+    }
+    test {
+        java {
+            srcDirs = ['src/test/java']
         }
     }
 }
@@ -26,11 +32,9 @@ sourceSets {
 dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
     implementation 'org.xerial:sqlite-jdbc:3.45.1.0' 
-    
-    // --- APACHE SPARK ---
-    implementation 'org.apache.spark:spark-core_2.13:3.5.0'
-    implementation 'org.apache.spark:spark-sql_2.13:3.5.0'
-    implementation 'org.apache.hadoop:hadoop-client:3.3.4' 
+    runtimeOnly 'org.slf4j:slf4j-nop:1.7.36'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 application {
@@ -43,13 +47,6 @@ tasks.register('runCollector', JavaExec) {
     description = "Ejecuta el SteamRawCollector con soporte SQLite"
     classpath = sourceSets.main.runtimeClasspath
     mainClass.set('steam.SteamRawCollector')
-}
-
-tasks.register('runIgdbCollector', JavaExec) {
-    group = "1. Recolección"
-    description = "Ejecuta el IGDBRawCollector con soporte SQLite"
-    classpath = sourceSets.main.runtimeClasspath
-    mainClass.set('IGDBRawCollector')
 }
 
 tasks.register('runRawgCollector', JavaExec) {
@@ -92,16 +89,42 @@ tasks.register('runGlobalUnion', JavaExec) {
 
 // -------------------------------------------------
 
-tasks.register('runJsonToParquet', JavaExec) {
-    group = "Application"
-    description = "Runs the JsonToParquet class with correct JVM args for Java 17+"
-    classpath = sourceSets.main.runtimeClasspath
-    mainClass.set('JsonToParquet')
-    jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED', "-Djava.library.path=${project.projectDir}/bin"
-}
-
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
+}
+
+tasks.register('runSteamReleaseDateUpdater', JavaExec) {
+    group = "1. Recolección"
+    description = "Revisa únicamente fechas pendientes, TBA o futuras de Steam"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('steam.SteamReleaseDateUpdater')
+    systemProperty 'release.update.limit', System.getProperty('release.update.limit', '1000')
+}
+
+tasks.register('runRawgReleaseDateUpdater', JavaExec) {
+    group = "1. Recolección"
+    description = "Revisa únicamente fechas pendientes, TBA o futuras de RAWG"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('rawg.RAWGReleaseDateUpdater')
+    systemProperty 'release.update.limit', System.getProperty('release.update.limit', '1000')
+}
+
+tasks.register('runSteamUpcomingScraper', JavaExec) {
+    group = "2. Procesado"
+    description = "Exporta los próximos lanzamientos de Steam"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('steam.SteamUpcomingScraper')
+}
+
+tasks.register('runRawgUpcomingScraper', JavaExec) {
+    group = "2. Procesado"
+    description = "Exporta los próximos lanzamientos de RAWG"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass.set('rawg.RAWGUpcomingScraper')
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
 }
 
 tasks.withType(JavaExec).configureEach {
