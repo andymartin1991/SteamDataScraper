@@ -6,8 +6,9 @@
   "parts": [
     "voxgamer_v7.db.gz.part001",
     "voxgamer_v7.db.gz.part002",
-    "voxgamer_v7.db.gz.part003"
+    "voxgamer_v7.db.gz.part003",
+    "voxgamer_v7.db.gz.part004"
   ],
   "partSizeMb": 90,
-  "createdAtUtc": "2026-05-04T06:47:24.665327Z"
+  "createdAtUtc": "2026-06-26T19:33:01.777942Z"
 }
